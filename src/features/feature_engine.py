@@ -24,5 +24,16 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     df["true_range"] = df[["tr_1", "tr_2", "tr_3"]].max(axis=1)
     df["atr_14"] = df["true_range"].ewm(span=14, adjust=False).mean()
+    delta = df["close"].diff()
+
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+
+    avg_gain = gain.ewm(span=14, adjust=False).mean()
+    avg_loss = loss.ewm(span=14, adjust=False).mean()
+
+    rs = avg_gain / avg_loss
+
+    df["rsi_14"] = 100 - (100 / (1 + rs))
 
     return df

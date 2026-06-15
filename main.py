@@ -74,6 +74,7 @@ def main():
                 "ema_20",
                 "ema_50",
                 "atr_14",
+                "rsi_14",
                 "long_signal",
                 "short_signal",
                 "ema_200",
