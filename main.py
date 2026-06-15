@@ -8,6 +8,10 @@ from src.features.candlestick_patterns import add_candlestick_patterns
 from src.features.market_structure import add_market_structure
 from src.features.break_retest import add_break_retest
 from src.features.higher_timeframe import get_h4_trend
+from src.features.liquidity import (
+    add_equal_highs_lows,
+    add_liquidity_sweeps
+)
 
 
 def main():
@@ -53,6 +57,10 @@ def main():
 
     df = add_market_structure(df)
 
+    df = add_equal_highs_lows(df)
+
+    df = add_liquidity_sweeps(df)
+
     df = add_candlestick_patterns(df)
 
     
@@ -80,6 +88,10 @@ def main():
                 "ema_200",
                 "long_score",
                 "short_score",
+                "equal_high",
+                "equal_low",
+                "bullish_sweep",
+                "bearish_sweep",
             ]
         ].tail(20)
     )
@@ -112,6 +124,10 @@ def main():
     print("Lower Low:", int(df["lower_low"].sum()))
     print("Bullish engulfing:", df["bullish_engulfing"].sum())
     print("Bearish engulfing:", df["bearish_engulfing"].sum())
+    print("Equal High:", int(df["equal_high"].sum()))
+    print("Equal Low:", int(df["equal_low"].sum()))
+    print("Bullish Sweep:", int(df["bullish_sweep"].sum()))
+    print("Bearish Sweep:", int(df["bearish_sweep"].sum()))
 
 
 if __name__ == "__main__":

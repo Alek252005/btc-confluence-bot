@@ -68,12 +68,14 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
 
     df.loc[df["uptrend"], "long_score"] += 40
     df.loc[df["long_pullback"], "long_score"] += 30
+    df.loc[df["bullish_sweep"], "long_score"] += 15
     
     df.loc[df["bullish_engulfing"], "long_score"] += 20
     df.loc[df["atr_14"] > 0, "long_score"] += 10
 
     df.loc[df["downtrend"], "short_score"] += 40
     df.loc[df["short_pullback"], "short_score"] += 30
+    df.loc[df["bearish_sweep"], "short_score"] += 15
     
     df.loc[df["bearish_engulfing"], "short_score"] += 20
     df.loc[df["atr_14"] > 0, "short_score"] += 10
