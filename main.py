@@ -57,11 +57,13 @@ def main():
 
     df = add_market_structure(df)
 
+    df = add_candlestick_patterns(df)
+
+    df = add_break_retest(df)
+
     df = add_equal_highs_lows(df)
 
     df = add_liquidity_sweeps(df)
-
-    df = add_candlestick_patterns(df)
 
     
 
