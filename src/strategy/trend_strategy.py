@@ -86,7 +86,7 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
 
     df["bullish_engulfing_strong"] = (
         df["bullish_engulfing"] &
-        (df["body_size"] > df["avg_body_10"])
+        (df["body_size"] > df["avg_body_10"] * 1.2)
     )
 
     df["long_signal"] = (
