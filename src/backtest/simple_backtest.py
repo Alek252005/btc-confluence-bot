@@ -151,6 +151,8 @@ def run_backtest(
 
         balance += result
 
+        signal_score = row["long_score"] if direction == "LONG" else row["short_score"]
+
         trades.append({
             "entry_time": df.index[entry_index],
             "exit_time": exit_time,
@@ -162,6 +164,22 @@ def run_backtest(
             "outcome": outcome,
             "result": result,
             "balance": balance,
+
+            "signal_score": signal_score,
+            "h4_uptrend": row.get("h4_uptrend", False),
+            "h4_downtrend": row.get("h4_downtrend", False),
+
+            "bullish_sweep": row.get("bullish_sweep", False),
+            "bearish_sweep": row.get("bearish_sweep", False),
+
+            "bullish_break_retest": row.get("bullish_break_retest", False),
+            "bearish_break_retest": row.get("bearish_break_retest", False),
+
+            "bullish_engulfing": row.get("bullish_engulfing", False),
+            "bearish_engulfing": row.get("bearish_engulfing", False),
+
+            "bullish_382_candle": row.get("bullish_382_candle", False),
+            "bearish_382_candle": row.get("bearish_382_candle", False),
         })
 
         # Salta direttamente a dopo la chiusura del trade
