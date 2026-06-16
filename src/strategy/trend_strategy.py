@@ -85,7 +85,8 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
         (df["long_score"] >= 80) &
         (
             df["bullish_engulfing"] |
-            df["bullish_382_candle"] 
+            df["bullish_382_candle"] |
+            df["bullish_break_retest"]
         )
     )
 
@@ -94,8 +95,9 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
         (df["short_score"] >= 80) &
         (
             df["bearish_engulfing"] |
-            df["bearish_382_candle"] 
-        )
+            df["bearish_382_candle"] |
+            df["bearish_break_retest"]
+        )   
     )
 
     return df

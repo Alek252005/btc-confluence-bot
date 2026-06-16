@@ -20,7 +20,7 @@ def main():
     # Scarica 30 giorni di dati BTC a 5 minuti
     df = yf.download(
         "BTC-USD",
-        period="60d",
+        period="30d",
         interval="5m",
         auto_adjust=True,
         progress=False
