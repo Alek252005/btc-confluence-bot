@@ -206,6 +206,8 @@ def main():
     print("Lower Low:", int(df["lower_low"].sum()))
     print("Bullish engulfing:", df["bullish_engulfing"].sum())
     print("Bearish engulfing:", df["bearish_engulfing"].sum())
+    print("Bullish Break Retest:", int(df["bullish_break_retest"].sum()))
+    print("Bearish Break Retest:", int(df["bearish_break_retest"].sum()))
     print("Equal High:", int(df["equal_high"].sum()))
     print("Equal Low:", int(df["equal_low"].sum()))
     print("Bullish Sweep:", int(df["bullish_sweep"].sum()))

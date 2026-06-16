@@ -80,6 +80,15 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
     df.loc[df["bearish_engulfing"], "short_score"] += 20
     df.loc[df["atr_14"] > 0, "short_score"] += 10
 
+    df["body_size"] = (df["close"] - df["open"]).abs()
+
+    df["avg_body_10"] = df["body_size"].rolling(10).mean()
+
+    df["bullish_engulfing_strong"] = (
+        df["bullish_engulfing"] &
+        (df["body_size"] > df["avg_body_10"])
+    )
+
     df["long_signal"] = (
         df["h4_uptrend"] &
         (df["long_score"] >= 80) &
@@ -87,7 +96,7 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
             df["bullish_382_candle"] |
             df["bullish_break_retest"] |
             (
-                df["bullish_engulfing"] &
+                df["bullish_engulfing_strong"] &
                 (df["long_score"] >= 90)
             )
         )
