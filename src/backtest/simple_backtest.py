@@ -173,6 +173,32 @@ def run_backtest(
 
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
 
+    profits = [trade["result"] for trade in trades]
+
+    winning_trades = [p for p in profits if p > 0]
+    losing_trades = [abs(p) for p in profits if p < 0]
+
+    gross_profit = sum(winning_trades)
+    gross_loss = sum(losing_trades)
+
+    profit_factor = (
+        gross_profit / gross_loss
+        if gross_loss > 0
+        else float("inf")
+    )
+
+    average_win = (
+        gross_profit / len(winning_trades)
+        if winning_trades
+        else 0
+    )
+
+    average_loss = (
+        gross_loss / len(losing_trades)
+        if losing_trades
+        else 0
+    )
+
     return {
         "initial_balance": initial_balance,
         "final_balance": balance,
@@ -182,4 +208,8 @@ def run_backtest(
         "losses": losses,
         "win_rate": win_rate,
         "trades": trades,
+
+        "profit_factor": profit_factor,
+        "average_win": average_win,
+        "average_loss": average_loss,
     }
