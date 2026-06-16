@@ -107,6 +107,67 @@ def main():
         use_break_even=True
     )
 
+    trades_df = pd.DataFrame(results["trades"])
+    trades_df.to_csv("trades.csv", index=False)
+
+    print("File trades.csv creato con", len(trades_df), "trade")
+
+    def analyze_group(name, data):
+        if len(data) == 0:
+            print(name, "-> Nessun trade")
+            return
+
+        profit = data["result"].sum()
+        wins = (data["result"] > 0).sum()
+        losses = (data["result"] < 0).sum()
+
+        gross_profit = data.loc[data["result"] > 0, "result"].sum()
+        gross_loss = abs(data.loc[data["result"] < 0, "result"].sum())
+
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+        win_rate = wins / len(data) * 100
+
+        print(
+            name,
+            "| Trade:", len(data),
+            "| Profitto:", round(profit, 2),
+            "| Win rate:", round(win_rate, 2), "%",
+            "| PF:", round(profit_factor, 2)
+        )
+
+
+    print("\n--- ANALISI SETUP ---")
+
+    analyze_group("Score 80-89", trades_df[(trades_df["signal_score"] >= 80) & (trades_df["signal_score"] < 90)])
+    analyze_group("Score 90-99", trades_df[(trades_df["signal_score"] >= 90) & (trades_df["signal_score"] < 100)])
+    analyze_group("Score 100+", trades_df[trades_df["signal_score"] >= 100])
+
+    print("\n--- ANALISI LIQUIDITY ---")
+    analyze_group("Bullish Sweep", trades_df[trades_df["bullish_sweep"] == True])
+    analyze_group("Bearish Sweep", trades_df[trades_df["bearish_sweep"] == True])
+
+    print("\n--- ANALISI BREAK RETEST ---")
+    analyze_group("Bullish Break Retest", trades_df[trades_df["bullish_break_retest"] == True])
+    analyze_group("Bearish Break Retest", trades_df[trades_df["bearish_break_retest"] == True])
+
+    print("\n--- ANALISI CANDLE ---")
+    analyze_group("Bullish Engulfing", trades_df[trades_df["bullish_engulfing"] == True])
+    analyze_group("Bearish Engulfing", trades_df[trades_df["bearish_engulfing"] == True])
+    analyze_group("Bullish 382 Candle", trades_df[trades_df["bullish_382_candle"] == True])
+    analyze_group("Bearish 382 Candle", trades_df[trades_df["bearish_382_candle"] == True])
+
+    print("\n--- ANALISI DIREZIONE ---")
+
+    analyze_group(
+        "LONG",
+        trades_df[trades_df["direction"] == "LONG"]
+    )
+
+    analyze_group(
+        "SHORT",
+        trades_df[trades_df["direction"] == "SHORT"]
+    )
+
     print("\n--- RISULTATI BACKTEST ---")
     print("Capitale iniziale:", results["initial_balance"])
     print("Capitale finale:", round(results["final_balance"], 2))
