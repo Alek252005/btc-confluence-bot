@@ -89,6 +89,11 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
         (df["body_size"] > df["avg_body_10"] * 1.2)
     )
 
+    df["bearish_engulfing_strong"] = (
+        df["bearish_engulfing"] &
+        (df["body_size"] > df["avg_body_10"] * 1.2)
+    )
+
     df["long_signal"] = (
         df["h4_uptrend"] &
         (df["long_score"] >= 80) &
@@ -106,7 +111,7 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
         df["h4_downtrend"] &
         (df["short_score"] >= 80) &
         (
-            df["bearish_engulfing"] |
+            df["bearish_engulfing_strong"] |
             df["bearish_382_candle"] |
             df["bearish_break_retest"]
         )
