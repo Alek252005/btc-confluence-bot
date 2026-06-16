@@ -15,9 +15,9 @@ from src.features.liquidity import (
 
 SYMBOL = "BTCUSDT"
 
-DATA_START = "2024-01-01"
-TEST_START = "2024-06-01"
-TEST_END = "2024-12-31"
+DATA_START = "2026-04-17"
+TEST_START = "2026-04-17"
+TEST_END = "2026-06-15"
 
 INTERVAL = "5m"
 
