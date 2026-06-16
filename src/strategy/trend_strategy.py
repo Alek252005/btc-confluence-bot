@@ -84,9 +84,12 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
         df["h4_uptrend"] &
         (df["long_score"] >= 80) &
         (
-            df["bullish_engulfing"] |
             df["bullish_382_candle"] |
-            df["bullish_break_retest"]
+            df["bullish_break_retest"] |
+            (
+                df["bullish_engulfing"] &
+                (df["long_score"] >= 90)
+            )
         )
     )
 

@@ -168,6 +168,22 @@ def main():
         trades_df[trades_df["direction"] == "SHORT"]
     )
 
+    print("\n--- ANALISI LONG DETTAGLIATA ---")
+
+    long_trades = trades_df[trades_df["direction"] == "LONG"]
+
+    analyze_group("LONG con Bullish Engulfing", long_trades[long_trades["bullish_engulfing"] == True])
+    analyze_group("LONG senza Bullish Engulfing", long_trades[long_trades["bullish_engulfing"] == False])
+
+    analyze_group("LONG con Bullish 382", long_trades[long_trades["bullish_382_candle"] == True])
+    analyze_group("LONG senza Bullish 382", long_trades[long_trades["bullish_382_candle"] == False])
+
+    analyze_group("LONG con Bullish Break Retest", long_trades[long_trades["bullish_break_retest"] == True])
+    analyze_group("LONG senza Bullish Break Retest", long_trades[long_trades["bullish_break_retest"] == False])
+
+    analyze_group("LONG con Bullish Sweep", long_trades[long_trades["bullish_sweep"] == True])
+    analyze_group("LONG senza Bullish Sweep", long_trades[long_trades["bullish_sweep"] == False])
+
     print("\n--- RISULTATI BACKTEST ---")
     print("Capitale iniziale:", results["initial_balance"])
     print("Capitale finale:", round(results["final_balance"], 2))
