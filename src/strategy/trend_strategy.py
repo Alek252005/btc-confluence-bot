@@ -80,7 +80,15 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
     df.loc[df["bearish_engulfing"], "short_score"] += 20
     df.loc[df["atr_14"] > 0, "short_score"] += 10
 
-    df["long_signal"] = False
+    df["long_signal"] = (
+        df["h4_uptrend"] &
+        (df["long_score"] >= 80) &
+        (
+            df["bullish_engulfing"] |
+            df["bullish_382_candle"] |
+            df["bullish_break_retest"]
+        )
+    )
 
     df["short_signal"] = (
         df["h4_downtrend"] &
@@ -89,7 +97,7 @@ def generate_signals(df: pd.DataFrame, trend_mode: str = "hybrid") -> pd.DataFra
             df["bearish_engulfing"] |
             df["bearish_382_candle"] |
             df["bearish_break_retest"]
-        )   
+        )
     )
 
     return df
