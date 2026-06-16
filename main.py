@@ -1,5 +1,5 @@
 import pandas as pd
-import yfinance as yf
+from src.data.binance_data import download_binance_klines
 
 from src.features.feature_engine import add_indicators
 from src.strategy.trend_strategy import generate_signals
@@ -13,39 +13,44 @@ from src.features.liquidity import (
     add_liquidity_sweeps
 )
 
+SYMBOL = "BTCUSDT"
+
+DATA_START = "2024-01-01"
+TEST_START = "2024-06-01"
+TEST_END = "2024-12-31"
+
+INTERVAL = "5m"
 
 def main():
-    print("Scarico dati BTC...")
+    print("Scarico dati BTC da Binance...")
 
-    # Scarica 30 giorni di dati BTC a 5 minuti
-    df = yf.download(
-        "BTC-USD",
-        period="60d",
-        interval="5m",
-        auto_adjust=True,
-        progress=False
+    test_start_dt = pd.to_datetime(TEST_START, utc=True)
+    test_end_exclusive_dt = pd.to_datetime(TEST_END, utc=True) + pd.Timedelta(days=1)
+
+    download_end = test_end_exclusive_dt.strftime("%Y-%m-%d")
+
+    print("Symbol:", SYMBOL)
+    print("DATA_START:", DATA_START)
+    print("TEST_START:", TEST_START)
+    print("TEST_END:", TEST_END)
+
+    df = download_binance_klines(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        start_date=DATA_START,
+        end_date=download_end,
     )
 
-    # Gestisce le colonne MultiIndex di yfinance
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    # Rinomina le colonne in minuscolo
-    df = df.rename(columns={
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close",
-        "Volume": "volume"
-    })
-
-    # Rimuove eventuali valori mancanti
     df = df.dropna()
 
     # Calcola gli indicatori
     df = add_indicators(df)
 
-    h4 = get_h4_trend()
+    h4 = get_h4_trend(
+        start_date=DATA_START,
+        end_date=download_end,
+        symbol=SYMBOL,
+    )
 
     h4 = h4.reindex(
         df.index,
@@ -71,6 +76,14 @@ def main():
 
     # Genera i segnali LONG e SHORT
     df = generate_signals(df, trend_mode="hybrid")
+
+    test_mask = (
+        (df.index >= test_start_dt) &
+        (df.index < test_end_exclusive_dt)
+    )
+
+    df.loc[~test_mask, "long_signal"] = False
+    df.loc[~test_mask, "short_signal"] = False
 
     # Mostra le ultime 20 righe
     print("\nUltime 20 candele:")
