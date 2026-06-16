@@ -1,21 +1,27 @@
 import pandas as pd
-import yfinance as yf
+
+from src.data.binance_data import download_binance_klines
 
 
-def get_h4_trend():
+def get_h4_trend(
+    start_date: str,
+    end_date: str,
+    symbol: str = "BTCUSDT",
+) -> pd.DataFrame:
+    """
+    Calcola il trend higher timeframe usando dati Binance 1h.
 
-    h4 = yf.download(
-        "BTC-USD",
-        period="60d",
+    Nota importante:
+    La funzione si chiama ancora get_h4_trend per non cambiare il resto del bot,
+    ma la baseline attuale usava dati 1h da Yahoo, quindi manteniamo 1h.
+    """
+
+    h4 = download_binance_klines(
+        symbol=symbol,
         interval="1h",
-        auto_adjust=True,
-        progress=False
+        start_date=start_date,
+        end_date=end_date,
     )
-
-    if isinstance(h4.columns, pd.MultiIndex):
-        h4.columns = h4.columns.get_level_values(0)
-
-    h4 = h4.rename(columns=str.lower)
 
     h4["ema_50"] = h4["close"].ewm(span=50).mean()
     h4["ema_200"] = h4["close"].ewm(span=200).mean()
