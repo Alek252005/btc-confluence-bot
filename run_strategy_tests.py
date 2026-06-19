@@ -32,6 +32,7 @@ class TestPeriod:
 @dataclass(frozen=True)
 class StrategyTestConfig:
     name: str
+    signal_mode: str = "baseline"
     short_only: bool = True
     min_short_score: Optional[int] = None
     max_short_score: Optional[int] = None
@@ -48,41 +49,68 @@ TEST_PERIODS = [
 TEST_CONFIGS = [
     StrategyTestConfig(
         name="SHORT 80-89",
+        signal_mode="baseline",
         min_short_score=80,
         max_short_score=89,
     ),
     StrategyTestConfig(
         name="SHORT 90-99",
+        signal_mode="baseline",
         min_short_score=90,
         max_short_score=99,
     ),
     StrategyTestConfig(
         name="SHORT 80-99",
+        signal_mode="baseline",
         min_short_score=80,
         max_short_score=99,
     ),
     StrategyTestConfig(
         name="SHORT 100+",
+        signal_mode="baseline",
         min_short_score=100,
         max_short_score=None,
     ),
     StrategyTestConfig(
         name="SHORT 80-89 solo bearish 382",
+        signal_mode="baseline",
         min_short_score=80,
         max_short_score=89,
         required_short_setup="bearish_382_candle",
     ),
     StrategyTestConfig(
         name="SHORT 80-89 solo bearish engulfing",
+        signal_mode="baseline",
         min_short_score=80,
         max_short_score=89,
         required_short_setup="bearish_engulfing",
     ),
     StrategyTestConfig(
         name="SHORT 80-89 solo bearish break retest",
+        signal_mode="baseline",
         min_short_score=80,
         max_short_score=89,
         required_short_setup="bearish_break_retest",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS bearish 382 pullback light",
+        signal_mode="scoreless_bearish_382_pullback_light",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS bearish 382 pullback strict",
+        signal_mode="scoreless_bearish_382_pullback_strict",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS bearish break retest",
+        signal_mode="scoreless_bearish_break_retest",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS liquidity sweep rejection",
+        signal_mode="scoreless_liquidity_sweep_rejection",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS strict professional confluence",
+        signal_mode="scoreless_strict_professional_confluence",
     ),
 ]
 
@@ -138,11 +166,130 @@ def apply_period_filter(df: pd.DataFrame, period: TestPeriod) -> pd.DataFrame:
     return filtered
 
 
+def bool_column(df: pd.DataFrame, column: str, default: bool = False) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series(default, index=df.index)
+
+    return df[column].fillna(False).astype(bool)
+
+
+def optional_condition(
+    df: pd.DataFrame,
+    required_columns: list[str],
+    condition_builder,
+) -> pd.Series:
+    if all(column in df.columns for column in required_columns):
+        condition = condition_builder(df)
+        return condition.fillna(False).astype(bool)
+
+    return pd.Series(True, index=df.index)
+
+
+def build_scoreless_short_signal(
+    df: pd.DataFrame,
+    signal_mode: str,
+) -> pd.Series:
+    h4_downtrend = bool_column(df, "h4_downtrend")
+    bearish_382 = bool_column(df, "bearish_382_candle")
+    bearish_engulfing = bool_column(df, "bearish_engulfing")
+    bearish_break_retest = bool_column(df, "bearish_break_retest")
+    bearish_sweep = bool_column(df, "bearish_sweep")
+    lower_high = bool_column(df, "lower_high")
+    lower_low = bool_column(df, "lower_low")
+
+    ema20_below_ema50 = optional_condition(
+        df,
+        ["ema_20", "ema_50"],
+        lambda data: data["ema_20"] < data["ema_50"],
+    )
+    ema50_below_ema200 = optional_condition(
+        df,
+        ["ema_50", "ema_200"],
+        lambda data: data["ema_50"] < data["ema_200"],
+    )
+    close_below_ema20 = optional_condition(
+        df,
+        ["close", "ema_20"],
+        lambda data: data["close"] < data["ema_20"],
+    )
+    pullback_to_ema = optional_condition(
+        df,
+        ["high", "ema_20", "ema_50"],
+        lambda data: (
+            (data["high"] >= data["ema_20"]) |
+            (data["high"] >= data["ema_50"])
+        ),
+    )
+    anti_chase = optional_condition(
+        df,
+        ["ema_20", "close", "atr_14"],
+        lambda data: (data["ema_20"] - data["close"]) <= (data["atr_14"] * 1.5),
+    )
+    recent_bearish_structure = lower_high | lower_low
+
+    if signal_mode == "scoreless_bearish_382_pullback_light":
+        return (
+            h4_downtrend &
+            ema20_below_ema50 &
+            close_below_ema20 &
+            pullback_to_ema &
+            bearish_382
+        )
+
+    if signal_mode == "scoreless_bearish_382_pullback_strict":
+        return (
+            h4_downtrend &
+            ema20_below_ema50 &
+            ema50_below_ema200 &
+            close_below_ema20 &
+            pullback_to_ema &
+            bearish_382 &
+            anti_chase
+        )
+
+    if signal_mode == "scoreless_bearish_break_retest":
+        return (
+            h4_downtrend &
+            recent_bearish_structure &
+            bearish_break_retest &
+            (bearish_engulfing | close_below_ema20)
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_rejection":
+        return (
+            h4_downtrend &
+            bearish_sweep &
+            (bearish_engulfing | bearish_382) &
+            anti_chase
+        )
+
+    if signal_mode == "scoreless_strict_professional_confluence":
+        return (
+            h4_downtrend &
+            ema20_below_ema50 &
+            close_below_ema20 &
+            recent_bearish_structure &
+            pullback_to_ema &
+            (bearish_382 | bearish_engulfing | bearish_break_retest) &
+            anti_chase
+        )
+
+    raise ValueError(f"signal_mode non supportato: {signal_mode}")
+
+
 def apply_config_filter(
     df: pd.DataFrame,
     config: StrategyTestConfig,
 ) -> pd.DataFrame:
     filtered = df.copy()
+
+    if config.signal_mode != "baseline":
+        filtered["long_signal"] = False
+        filtered["short_signal"] = build_scoreless_short_signal(
+            filtered,
+            config.signal_mode,
+        )
+        return filtered
 
     if config.short_only:
         filtered["long_signal"] = False
@@ -173,8 +320,8 @@ def run_single_test(
     config: StrategyTestConfig,
     period: TestPeriod,
 ) -> dict:
-    df = apply_period_filter(base_df, period)
-    df = apply_config_filter(df, config)
+    df = apply_config_filter(base_df, config)
+    df = apply_period_filter(df, period)
 
     results = run_backtest(
         df,
@@ -183,6 +330,7 @@ def run_single_test(
 
     return {
         "config": config.name,
+        "signal_mode": config.signal_mode,
         "periodo": period.name,
         "profitto": results["profit"],
         "capitale_finale": results["final_balance"],
@@ -204,6 +352,7 @@ def format_number(value: float) -> str:
 def print_results_table(rows: list[dict]) -> None:
     columns = [
         ("config", "Configurazione"),
+        ("signal_mode", "Signal mode"),
         ("periodo", "Periodo"),
         ("profitto", "Profitto"),
         ("capitale_finale", "Capitale finale"),
@@ -219,6 +368,7 @@ def print_results_table(rows: list[dict]) -> None:
     for row in rows:
         formatted_rows.append({
             "config": row["config"],
+            "signal_mode": row["signal_mode"],
             "periodo": row["periodo"],
             "profitto": format_number(row["profitto"]),
             "capitale_finale": format_number(row["capitale_finale"]),
@@ -248,7 +398,7 @@ def print_results_table(rows: list[dict]) -> None:
         print(
             " | ".join(
                 row[key].rjust(widths[key])
-                if key not in {"config", "periodo"}
+                if key not in {"config", "signal_mode", "periodo"}
                 else row[key].ljust(widths[key])
                 for key, _ in columns
             )
