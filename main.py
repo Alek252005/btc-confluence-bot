@@ -1,6 +1,7 @@
 import pandas as pd
 from src.data.binance_data import download_binance_klines
 
+from src.strategy.playbook_strategy import generate_playbook_signals
 from src.features.feature_engine import add_indicators
 from src.strategy.trend_strategy import generate_signals
 from src.backtest.simple_backtest import run_backtest
@@ -15,11 +16,24 @@ from src.features.liquidity import (
 
 SYMBOL = "BTCUSDT"
 
-DATA_START = "2026-04-17"
-TEST_START = "2026-04-17"
+DATA_START = "2024-12-01"
+TEST_START = "2025-01-01"
 TEST_END = "2026-06-15"
 
 INTERVAL = "5m"
+ # "baseline" oppure "playbook"
+STRATEGY_MODE = "baseline"
+PLAYBOOK_SHORT_ONLY_TEST = False
+
+SHORT_ONLY_TEST = True
+MIN_SHORT_SCORE_TEST = 80
+MAX_SHORT_SCORE_TEST = 89
+EXCLUDED_ENTRY_HOURS_TEST = []
+
+USE_SHORT_NO_CHASE_TEST = False
+SHORT_NO_CHASE_ATR_MULT = 1.2
+
+
 
 def main():
     print("Scarico dati BTC da Binance...")
@@ -33,6 +47,15 @@ def main():
     print("DATA_START:", DATA_START)
     print("TEST_START:", TEST_START)
     print("TEST_END:", TEST_END)
+    print("STRATEGY_MODE:", STRATEGY_MODE)
+    print("STRATEGY_MODE:", STRATEGY_MODE)
+    print("PLAYBOOK_SHORT_ONLY_TEST:", PLAYBOOK_SHORT_ONLY_TEST)
+    print("SHORT_ONLY_TEST:", SHORT_ONLY_TEST)
+    print("MIN_SHORT_SCORE_TEST:", MIN_SHORT_SCORE_TEST)
+    print("MAX_SHORT_SCORE_TEST:", MAX_SHORT_SCORE_TEST)
+    print("EXCLUDED_ENTRY_HOURS_TEST:", EXCLUDED_ENTRY_HOURS_TEST)
+    print("USE_SHORT_NO_CHASE_TEST:", USE_SHORT_NO_CHASE_TEST)
+    print("SHORT_NO_CHASE_ATR_MULT:", SHORT_NO_CHASE_ATR_MULT)
 
     df = download_binance_klines(
         symbol=SYMBOL,
@@ -70,12 +93,22 @@ def main():
 
     df = add_liquidity_sweeps(df)
 
-    
 
 
 
     # Genera i segnali LONG e SHORT
-    df = generate_signals(df, trend_mode="hybrid")
+    if STRATEGY_MODE == "baseline":
+        df = generate_signals(df, trend_mode="hybrid")
+
+
+    elif STRATEGY_MODE == "playbook":
+        df = generate_playbook_signals(df)
+
+    else:
+        raise ValueError("STRATEGY_MODE deve essere 'baseline' oppure 'playbook'")
+    
+    if STRATEGY_MODE == "playbook" and PLAYBOOK_SHORT_ONLY_TEST:
+        df["long_signal"] = False
 
     test_mask = (
         (df.index >= test_start_dt) &
@@ -84,6 +117,46 @@ def main():
 
     df.loc[~test_mask, "long_signal"] = False
     df.loc[~test_mask, "short_signal"] = False
+
+    
+
+    if SHORT_ONLY_TEST:
+        df["long_signal"] = False
+
+    if MIN_SHORT_SCORE_TEST is not None:
+        df["short_signal"] = (
+            df["short_signal"] &
+            (df["short_score"] >= MIN_SHORT_SCORE_TEST)
+        )
+
+    if MAX_SHORT_SCORE_TEST is not None:
+        df["short_signal"] = (
+            df["short_signal"] &
+            (df["short_score"] <= MAX_SHORT_SCORE_TEST)
+        )
+
+    if USE_SHORT_NO_CHASE_TEST:
+        short_distance_from_ema20 = df["ema_20"] - df["close"]
+
+        short_not_too_extended = (
+            short_distance_from_ema20 <= df["atr_14"] * SHORT_NO_CHASE_ATR_MULT
+        )
+
+        df["short_signal"] = (
+            df["short_signal"] &
+            short_not_too_extended
+        )
+
+    if EXCLUDED_ENTRY_HOURS_TEST:
+        entry_hour = pd.Series(
+            (df.index + pd.Timedelta(minutes=5)).hour,
+            index=df.index
+        )
+
+        df["short_signal"] = (
+            df["short_signal"] &
+            (~entry_hour.isin(EXCLUDED_ENTRY_HOURS_TEST))
+        )
 
     # Mostra le ultime 20 righe
     print("\nUltime 20 candele:")
