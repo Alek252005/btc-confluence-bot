@@ -18,7 +18,7 @@ from src.strategy.trend_strategy import generate_signals
 SYMBOL = "BTCUSDT"
 INTERVAL = "5m"
 
-DATA_START = "2024-12-01"
+DATA_START = "2023-12-01"
 DATA_END = "2026-06-16"
 
 
@@ -40,10 +40,25 @@ class StrategyTestConfig:
 
 
 TEST_PERIODS = [
+    TestPeriod("2024", "2024-01-01", "2024-12-31"),
     TestPeriod("2025", "2025-01-01", "2025-12-31"),
     TestPeriod("2026", "2026-01-01", "2026-06-15"),
+    TestPeriod("2024-2026", "2024-01-01", "2026-06-15"),
     TestPeriod("2025-2026", "2025-01-01", "2026-06-15"),
 ]
+
+
+MONTHLY_SUMMARY_START = "2024-01-01"
+MONTHLY_SUMMARY_END = "2026-06-15"
+
+MONTHLY_SUMMARY_CONFIG_NAMES = {
+    "SHORT 80-89",
+}
+
+MONTHLY_SUMMARY_SIGNAL_MODES = {
+    "scoreless_liquidity_sweep_structure_filter",
+    "scoreless_liquidity_sweep_rejection",
+}
 
 
 TEST_CONFIGS = [
@@ -503,16 +518,109 @@ def print_results_table(rows: list[dict]) -> None:
         )
 
 
+def build_monthly_periods(start: str, end: str) -> list[TestPeriod]:
+    start_dt = pd.Timestamp(start)
+    end_dt = pd.Timestamp(end)
+    month_starts = pd.date_range(
+        start=start_dt.replace(day=1),
+        end=end_dt.replace(day=1),
+        freq="MS",
+    )
+
+    periods = []
+
+    for month_start in month_starts:
+        month_end = month_start + pd.offsets.MonthEnd(0)
+        capped_end = min(month_end, end_dt)
+
+        periods.append(
+            TestPeriod(
+                name=month_start.strftime("%Y-%m"),
+                start=month_start.strftime("%Y-%m-%d"),
+                end=capped_end.strftime("%Y-%m-%d"),
+            )
+        )
+
+    return periods
+
+
+def should_include_monthly_summary(config: StrategyTestConfig) -> bool:
+    return (
+        config.name in MONTHLY_SUMMARY_CONFIG_NAMES or
+        config.signal_mode in MONTHLY_SUMMARY_SIGNAL_MODES
+    )
+
+
+def print_monthly_summary_table(rows: list[dict]) -> None:
+    columns = [
+        ("config", "Configurazione"),
+        ("periodo", "Mese"),
+        ("profitto", "Profitto"),
+        ("trade", "Trade"),
+        ("win_rate", "Win rate %"),
+        ("profit_factor", "Profit factor"),
+    ]
+
+    formatted_rows = []
+
+    for row in rows:
+        formatted_rows.append({
+            "config": row["config"],
+            "periodo": row["periodo"],
+            "profitto": format_number(row["profitto"]),
+            "trade": str(row["trade"]),
+            "win_rate": format_number(row["win_rate"]),
+            "profit_factor": format_number(row["profit_factor"]),
+        })
+
+    widths = {
+        key: max(len(label), *(len(row[key]) for row in formatted_rows))
+        for key, label in columns
+    }
+
+    header = " | ".join(
+        label.ljust(widths[key])
+        for key, label in columns
+    )
+    separator = "-+-".join("-" * widths[key] for key, _ in columns)
+
+    print()
+    print("Riepilogo mensile")
+    print(header)
+    print(separator)
+
+    for row in formatted_rows:
+        print(
+            " | ".join(
+                row[key].rjust(widths[key])
+                if key not in {"config", "periodo"}
+                else row[key].ljust(widths[key])
+                for key, _ in columns
+            )
+        )
+
+
 def main() -> None:
     base_df = prepare_dataset()
     rows = []
+    monthly_rows = []
+    monthly_periods = build_monthly_periods(
+        MONTHLY_SUMMARY_START,
+        MONTHLY_SUMMARY_END,
+    )
 
     for config in TEST_CONFIGS:
         for period in TEST_PERIODS:
             print(f"Eseguo test: {config.name} | {period.name}")
             rows.append(run_single_test(base_df, config, period))
 
+        if should_include_monthly_summary(config):
+            for period in monthly_periods:
+                print(f"Eseguo riepilogo mensile: {config.name} | {period.name}")
+                monthly_rows.append(run_single_test(base_df, config, period))
+
     print_results_table(rows)
+    print_monthly_summary_table(monthly_rows)
 
 
 if __name__ == "__main__":
