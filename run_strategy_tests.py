@@ -132,6 +132,10 @@ TEST_CONFIGS = [
         signal_mode="scoreless_liquidity_sweep_structure_filter",
     ),
     StrategyTestConfig(
+        name="SCORELESS liquidity sweep structure filter safe",
+        signal_mode="scoreless_liquidity_sweep_structure_filter_safe",
+    ),
+    StrategyTestConfig(
         name="SCORELESS liquidity sweep pullback zone",
         signal_mode="scoreless_liquidity_sweep_pullback_zone",
     ),
@@ -180,10 +184,13 @@ def prepare_dataset() -> pd.DataFrame:
         symbol=SYMBOL,
     )
 
+    h4["h4_downtrend_safe"] = h4["h4_downtrend"].shift(1).fillna(False)
+
     h4 = h4.reindex(df.index, method="ffill")
 
     df["h4_uptrend"] = h4["h4_uptrend"]
     df["h4_downtrend"] = h4["h4_downtrend"]
+    df["h4_downtrend_safe"] = h4["h4_downtrend_safe"]
 
     df = add_market_structure(df)
     df = add_candlestick_patterns(df)
@@ -233,12 +240,15 @@ def build_scoreless_short_signal(
     signal_mode: str,
 ) -> pd.Series:
     h4_downtrend = bool_column(df, "h4_downtrend")
+    h4_downtrend_safe = bool_column(df, "h4_downtrend_safe")
     bearish_382 = bool_column(df, "bearish_382_candle")
     bearish_engulfing = bool_column(df, "bearish_engulfing")
     bearish_break_retest = bool_column(df, "bearish_break_retest")
     bearish_sweep = bool_column(df, "bearish_sweep")
     lower_high = bool_column(df, "lower_high")
     lower_low = bool_column(df, "lower_low")
+    lower_high_safe = lower_high.shift(3).fillna(False).astype(bool)
+    lower_low_safe = lower_low.shift(3).fillna(False).astype(bool)
 
     ema20_below_ema50 = optional_condition(
         df,
@@ -274,7 +284,14 @@ def build_scoreless_short_signal(
         lambda data: (data["ema_20"] - data["close"]) <= (data["atr_14"] * 1.2),
     )
     recent_bearish_structure = lower_high | lower_low
+    recent_bearish_structure_safe = lower_high_safe | lower_low_safe
     bearish_trigger = bearish_engulfing | bearish_382
+    previous_range_high = df["high"].shift(1).rolling(20).max()
+    bearish_sweep_safe = (
+        (df["high"] > previous_range_high) &
+        (df["close"] < previous_range_high) &
+        (df["close"] < df["open"])
+    ).fillna(False).astype(bool)
 
     if signal_mode == "scoreless_bearish_382_pullback_light":
         return (
@@ -325,6 +342,14 @@ def build_scoreless_short_signal(
             h4_downtrend &
             bearish_sweep &
             recent_bearish_structure &
+            bearish_trigger
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_structure_filter_safe":
+        return (
+            h4_downtrend_safe &
+            bearish_sweep_safe &
+            recent_bearish_structure_safe &
             bearish_trigger
         )
 
