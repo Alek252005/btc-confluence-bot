@@ -109,6 +109,34 @@ TEST_CONFIGS = [
         signal_mode="scoreless_liquidity_sweep_rejection",
     ),
     StrategyTestConfig(
+        name="SCORELESS liquidity sweep trend filter",
+        signal_mode="scoreless_liquidity_sweep_trend_filter",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS liquidity sweep structure filter",
+        signal_mode="scoreless_liquidity_sweep_structure_filter",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS liquidity sweep pullback zone",
+        signal_mode="scoreless_liquidity_sweep_pullback_zone",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS liquidity sweep 382 only",
+        signal_mode="scoreless_liquidity_sweep_382_only",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS liquidity sweep engulfing only",
+        signal_mode="scoreless_liquidity_sweep_engulfing_only",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS liquidity sweep strict",
+        signal_mode="scoreless_liquidity_sweep_strict",
+    ),
+    StrategyTestConfig(
+        name="SCORELESS liquidity sweep ultra strict",
+        signal_mode="scoreless_liquidity_sweep_ultra_strict",
+    ),
+    StrategyTestConfig(
         name="SCORELESS strict professional confluence",
         signal_mode="scoreless_strict_professional_confluence",
     ),
@@ -225,7 +253,13 @@ def build_scoreless_short_signal(
         ["ema_20", "close", "atr_14"],
         lambda data: (data["ema_20"] - data["close"]) <= (data["atr_14"] * 1.5),
     )
+    anti_chase_strict = optional_condition(
+        df,
+        ["ema_20", "close", "atr_14"],
+        lambda data: (data["ema_20"] - data["close"]) <= (data["atr_14"] * 1.2),
+    )
     recent_bearish_structure = lower_high | lower_low
+    bearish_trigger = bearish_engulfing | bearish_382
 
     if signal_mode == "scoreless_bearish_382_pullback_light":
         return (
@@ -261,6 +295,70 @@ def build_scoreless_short_signal(
             bearish_sweep &
             (bearish_engulfing | bearish_382) &
             anti_chase
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_trend_filter":
+        return (
+            h4_downtrend &
+            ema20_below_ema50 &
+            bearish_sweep &
+            bearish_trigger
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_structure_filter":
+        return (
+            h4_downtrend &
+            bearish_sweep &
+            recent_bearish_structure &
+            bearish_trigger
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_pullback_zone":
+        return (
+            h4_downtrend &
+            ema20_below_ema50 &
+            bearish_sweep &
+            pullback_to_ema &
+            bearish_trigger
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_382_only":
+        return (
+            h4_downtrend &
+            bearish_sweep &
+            bearish_382
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_engulfing_only":
+        return (
+            h4_downtrend &
+            bearish_sweep &
+            bearish_engulfing
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_strict":
+        return (
+            h4_downtrend &
+            ema20_below_ema50 &
+            close_below_ema20 &
+            bearish_sweep &
+            recent_bearish_structure &
+            pullback_to_ema &
+            bearish_trigger &
+            anti_chase
+        )
+
+    if signal_mode == "scoreless_liquidity_sweep_ultra_strict":
+        return (
+            h4_downtrend &
+            ema20_below_ema50 &
+            ema50_below_ema200 &
+            close_below_ema20 &
+            bearish_sweep &
+            recent_bearish_structure &
+            pullback_to_ema &
+            bearish_382 &
+            anti_chase_strict
         )
 
     if signal_mode == "scoreless_strict_professional_confluence":
