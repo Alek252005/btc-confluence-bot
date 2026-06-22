@@ -1,0 +1,209 @@
+//@version=6
+strategy(
+     "Professional Confluence Strategy v2",
+     overlay=true,
+     pyramiding=0,
+     process_orders_on_close=false,
+     calc_on_every_tick=false
+)
+
+directionMode = input.string("Both", "Direction mode", options=["Both", "Long only", "Short only"])
+htfTimeframe = input.timeframe("60", "HTF timeframe")
+sweepLookback = input.int(20, "Sweep lookback", minval=2)
+confirmationBars = input.int(3, "Confirmation bars", minval=1)
+atrLength = input.int(14, "ATR length", minval=1)
+riskReward = input.float(2.0, "Risk reward", minval=0.1, step=0.1)
+atrStopBuffer = input.float(0.2, "ATR stop buffer", minval=0.0, step=0.1)
+useEmaTrendFilter = input.bool(true, "Use EMA trend filter")
+useEma200Filter = input.bool(true, "Use EMA200 macro filter")
+useAdxFilter = input.bool(false, "Use ADX filter")
+adxLength = input.int(14, "ADX length", minval=1)
+minAdx = input.float(18.0, "Min ADX", minval=0.0, step=0.5)
+useAntiChase = input.bool(true, "Use anti-chase")
+antiChaseMultiplier = input.float(1.5, "Anti-chase ATR multiplier", minval=0.1, step=0.1)
+riskPercent = input.float(1.0, "Risk per trade %", minval=0.01, step=0.1)
+triggerMode = input.string("Both", "Trigger mode", options=["Engulfing", "382", "Both"])
+
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+atr = ta.atr(atrLength)
+[_, _, adx] = ta.dmi(adxLength, adxLength)
+
+// Confirmed higher-timeframe values. The [1] expression requests only the
+// previous completed HTF candle, while lookahead_off prevents future leakage.
+htfClose = request.security(syminfo.tickerid, htfTimeframe, close[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfEma50 = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, 50)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfEma200 = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, 200)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+htfBullish = htfClose > htfEma50 and htfEma50 > htfEma200
+htfBearish = htfClose < htfEma50 and htfEma50 < htfEma200
+
+previousRangeHigh = ta.highest(high[1], sweepLookback)
+previousRangeLow = ta.lowest(low[1], sweepLookback)
+
+bullishSweep = low < previousRangeLow and close > previousRangeLow and close > open
+bearishSweep = high > previousRangeHigh and close < previousRangeHigh and close < open
+
+prevBullish = close[1] > open[1]
+prevBearish = close[1] < open[1]
+currentBullish = close > open
+currentBearish = close < open
+
+bullishEngulfing = prevBearish and currentBullish and open <= close[1] and close >= open[1]
+bearishEngulfing = prevBullish and currentBearish and open >= close[1] and close <= open[1]
+
+candleRange = high - low
+upper382Level = high - candleRange * 0.382
+lower382Level = low + candleRange * 0.382
+
+// Bullish 382: bullish candle closing in the upper 38.2% of its range.
+// Bearish 382: bearish candle closing in the lower 38.2% of its range.
+bullish382Candle = currentBullish and candleRange > 0 and close >= upper382Level
+bearish382Candle = currentBearish and candleRange > 0 and close <= lower382Level
+
+bullishTrigger = switch triggerMode
+    "Engulfing" => bullishEngulfing
+    "382" => bullish382Candle
+    => bullishEngulfing or bullish382Candle
+
+bearishTrigger = switch triggerMode
+    "Engulfing" => bearishEngulfing
+    "382" => bearish382Candle
+    => bearishEngulfing or bearish382Candle
+
+canLong = directionMode == "Both" or directionMode == "Long only"
+canShort = directionMode == "Both" or directionMode == "Short only"
+
+emaTrendLongOk = not useEmaTrendFilter or ema20 > ema50
+emaTrendShortOk = not useEmaTrendFilter or ema20 < ema50
+emaMacroLongOk = not useEma200Filter or ema50 > ema200
+emaMacroShortOk = not useEma200Filter or ema50 < ema200
+adxOk = not useAdxFilter or adx >= minAdx
+antiChaseLongOk = not useAntiChase or close - ema20 <= atr * antiChaseMultiplier
+antiChaseShortOk = not useAntiChase or ema20 - close <= atr * antiChaseMultiplier
+
+var bool longSetupActive = false
+var bool shortSetupActive = false
+var int longSetupBar = na
+var int shortSetupBar = na
+var float longSetupLow = na
+var float shortSetupHigh = na
+var float longStop = na
+var float shortStop = na
+
+longSetupCandidate = barstate.isconfirmed and canLong and htfBullish and bullishSweep
+shortSetupCandidate = barstate.isconfirmed and canShort and htfBearish and bearishSweep
+
+if longSetupCandidate
+    longSetupActive := true
+    longSetupBar := bar_index
+    longSetupLow := low
+
+if shortSetupCandidate
+    shortSetupActive := true
+    shortSetupBar := bar_index
+    shortSetupHigh := high
+
+longSetupAge = longSetupActive ? bar_index - longSetupBar : na
+shortSetupAge = shortSetupActive ? bar_index - shortSetupBar : na
+
+if longSetupActive and longSetupAge > confirmationBars
+    longSetupActive := false
+    longSetupBar := na
+    longSetupLow := na
+
+if shortSetupActive and shortSetupAge > confirmationBars
+    shortSetupActive := false
+    shortSetupBar := na
+    shortSetupHigh := na
+
+longConfirmation = (
+     barstate.isconfirmed and
+     longSetupActive and
+     longSetupAge >= 1 and
+     longSetupAge <= confirmationBars and
+     strategy.position_size == 0 and
+     htfBullish and
+     bullishTrigger and
+     close > ema20 and
+     emaTrendLongOk and
+     emaMacroLongOk and
+     adxOk and
+     antiChaseLongOk
+)
+
+shortConfirmation = (
+     barstate.isconfirmed and
+     shortSetupActive and
+     shortSetupAge >= 1 and
+     shortSetupAge <= confirmationBars and
+     strategy.position_size == 0 and
+     htfBearish and
+     bearishTrigger and
+     close < ema20 and
+     emaTrendShortOk and
+     emaMacroShortOk and
+     adxOk and
+     antiChaseShortOk
+)
+
+longSignal = longConfirmation and not shortConfirmation
+shortSignal = shortConfirmation and not longConfirmation
+
+if strategy.position_size == 0
+    longStop := na
+    shortStop := na
+
+if longSignal
+    candidateStop = longSetupLow - atr * atrStopBuffer
+    stopDistance = close - candidateStop
+    riskCash = strategy.equity * riskPercent / 100.0
+    quantity = stopDistance > syminfo.mintick ? riskCash / stopDistance : na
+    if not na(quantity) and quantity > 0
+        longStop := candidateStop
+        strategy.entry("Long", strategy.long, qty=quantity)
+        longSetupActive := false
+        longSetupBar := na
+        longSetupLow := na
+
+if shortSignal
+    candidateStop = shortSetupHigh + atr * atrStopBuffer
+    stopDistance = candidateStop - close
+    riskCash = strategy.equity * riskPercent / 100.0
+    quantity = stopDistance > syminfo.mintick ? riskCash / stopDistance : na
+    if not na(quantity) and quantity > 0
+        shortStop := candidateStop
+        strategy.entry("Short", strategy.short, qty=quantity)
+        shortSetupActive := false
+        shortSetupBar := na
+        shortSetupHigh := na
+
+if strategy.position_size > 0 and not na(longStop)
+    longRisk = strategy.position_avg_price - longStop
+    if longRisk > syminfo.mintick
+        longTarget = strategy.position_avg_price + longRisk * riskReward
+        strategy.exit("Long exit", from_entry="Long", stop=longStop, limit=longTarget)
+
+if strategy.position_size < 0 and not na(shortStop)
+    shortRisk = shortStop - strategy.position_avg_price
+    if shortRisk > syminfo.mintick
+        shortTarget = strategy.position_avg_price - shortRisk * riskReward
+        strategy.exit("Short exit", from_entry="Short", stop=shortStop, limit=shortTarget)
+
+plot(ema20, "EMA20", color=color.new(color.teal, 0), linewidth=1)
+plot(ema50, "EMA50", color=color.new(color.orange, 0), linewidth=1)
+plot(ema200, "EMA200", color=color.new(color.purple, 0), linewidth=2)
+
+plotshape(bullishSweep, title="Bullish sweep", style=shape.circle, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="SW")
+plotshape(bearishSweep, title="Bearish sweep", style=shape.circle, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="SW")
+plotshape(longConfirmation, title="Long confirmation", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, text="CF")
+plotshape(shortConfirmation, title="Short confirmation", style=shape.triangledown, location=location.abovebar, color=color.new(color.maroon, 0), size=size.tiny, text="CF")
+plotshape(longSignal, title="Long entry", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.small, text="LONG")
+plotshape(shortSignal, title="Short entry", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.small, text="SHORT")
+
+plot(longSetupActive ? longSetupLow : na, "Active long setup low", color=color.new(color.green, 45), style=plot.style_linebr)
+plot(shortSetupActive ? shortSetupHigh : na, "Active short setup high", color=color.new(color.red, 45), style=plot.style_linebr)
+
+alertcondition(longSignal, title="Long signal", message="Professional Confluence Strategy v2: long signal")
+alertcondition(shortSignal, title="Short signal", message="Professional Confluence Strategy v2: short signal")
