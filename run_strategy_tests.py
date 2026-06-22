@@ -136,6 +136,38 @@ TEST_CONFIGS = [
         signal_mode="scoreless_liquidity_sweep_structure_filter_safe",
     ),
     StrategyTestConfig(
+        name="SAFE sweep HTF trigger",
+        signal_mode="safe_sweep_htf_trigger",
+    ),
+    StrategyTestConfig(
+        name="SAFE sweep EMA trend trigger",
+        signal_mode="safe_sweep_ema_trend_trigger",
+    ),
+    StrategyTestConfig(
+        name="SAFE sweep EMA close trigger",
+        signal_mode="safe_sweep_ema_close_trigger",
+    ),
+    StrategyTestConfig(
+        name="SAFE sweep breakdown trigger",
+        signal_mode="safe_sweep_breakdown_trigger",
+    ),
+    StrategyTestConfig(
+        name="SAFE sweep pullback 382",
+        signal_mode="safe_sweep_pullback_382",
+    ),
+    StrategyTestConfig(
+        name="SAFE sweep pullback engulfing",
+        signal_mode="safe_sweep_pullback_engulfing",
+    ),
+    StrategyTestConfig(
+        name="SAFE sweep anti chase",
+        signal_mode="safe_sweep_anti_chase",
+    ),
+    StrategyTestConfig(
+        name="SAFE sweep strict",
+        signal_mode="safe_sweep_strict",
+    ),
+    StrategyTestConfig(
         name="SCORELESS liquidity sweep pullback zone",
         signal_mode="scoreless_liquidity_sweep_pullback_zone",
     ),
@@ -286,11 +318,16 @@ def build_scoreless_short_signal(
     recent_bearish_structure = lower_high | lower_low
     recent_bearish_structure_safe = lower_high_safe | lower_low_safe
     bearish_trigger = bearish_engulfing | bearish_382
+    bearish_candle = (df["close"] < df["open"]).fillna(False).astype(bool)
     previous_range_high = df["high"].shift(1).rolling(20).max()
     bearish_sweep_safe = (
         (df["high"] > previous_range_high) &
         (df["close"] < previous_range_high) &
         (df["close"] < df["open"])
+    ).fillna(False).astype(bool)
+    previous_range_low = df["low"].shift(1).rolling(20).min()
+    breakdown_safe = (
+        df["close"] < previous_range_low
     ).fillna(False).astype(bool)
 
     if signal_mode == "scoreless_bearish_382_pullback_light":
@@ -351,6 +388,75 @@ def build_scoreless_short_signal(
             bearish_sweep_safe &
             recent_bearish_structure_safe &
             bearish_trigger
+        )
+
+    if signal_mode == "safe_sweep_htf_trigger":
+        return (
+            h4_downtrend_safe &
+            bearish_sweep_safe &
+            bearish_trigger
+        )
+
+    if signal_mode == "safe_sweep_ema_trend_trigger":
+        return (
+            h4_downtrend_safe &
+            ema20_below_ema50 &
+            bearish_sweep_safe &
+            bearish_trigger
+        )
+
+    if signal_mode == "safe_sweep_ema_close_trigger":
+        return (
+            h4_downtrend_safe &
+            ema20_below_ema50 &
+            close_below_ema20 &
+            bearish_sweep_safe &
+            bearish_trigger
+        )
+
+    if signal_mode == "safe_sweep_breakdown_trigger":
+        return (
+            h4_downtrend_safe &
+            bearish_sweep_safe &
+            breakdown_safe &
+            bearish_candle
+        )
+
+    if signal_mode == "safe_sweep_pullback_382":
+        return (
+            h4_downtrend_safe &
+            ema20_below_ema50 &
+            pullback_to_ema &
+            bearish_sweep_safe &
+            bearish_382
+        )
+
+    if signal_mode == "safe_sweep_pullback_engulfing":
+        return (
+            h4_downtrend_safe &
+            ema20_below_ema50 &
+            pullback_to_ema &
+            bearish_sweep_safe &
+            bearish_engulfing
+        )
+
+    if signal_mode == "safe_sweep_anti_chase":
+        return (
+            h4_downtrend_safe &
+            ema20_below_ema50 &
+            bearish_sweep_safe &
+            bearish_trigger &
+            anti_chase
+        )
+
+    if signal_mode == "safe_sweep_strict":
+        return (
+            h4_downtrend_safe &
+            ema20_below_ema50 &
+            close_below_ema20 &
+            bearish_sweep_safe &
+            bearish_trigger &
+            anti_chase
         )
 
     if signal_mode == "scoreless_liquidity_sweep_pullback_zone":
