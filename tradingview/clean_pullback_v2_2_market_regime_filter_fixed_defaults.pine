@@ -1,0 +1,244 @@
+//@version=6
+strategy("Clean Pullback v2.2 Market Regime Filter Fixed Defaults", overlay=true, pyramiding=0, process_orders_on_close=true, calc_on_every_tick=false, initial_capital=1000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1, margin_long=100, margin_short=100)
+
+directionMode = input.string("Both", "Direction mode", options=["Both", "Long only", "Short only"])
+htfTimeframe = input.timeframe("60", "HTF timeframe")
+emaFastLength = input.int(20, "EMA fast length", minval=1)
+emaSlowLength = input.int(50, "EMA slow length", minval=1)
+emaMacroLength = input.int(200, "EMA macro length", minval=1)
+atrLength = input.int(14, "ATR length", minval=1)
+atrStopMultiplier = input.float(1.5, "ATR stop multiplier", minval=0.1, step=0.1)
+useAtrStopBuffer = input.bool(true, "Use ATR stop buffer")
+atrStopBufferMultiplier = input.float(0.17, "ATR stop buffer multiplier", minval=0.0, step=0.1)
+riskReward = input.float(2.0, "Risk reward", minval=0.1, step=0.1)
+pullbackDistanceAtrMultiplier = input.float(0.8, "Pullback distance ATR multiplier", minval=0.0, step=0.1)
+useEma200Filter = input.bool(true, "Use EMA200 filter")
+useHtfTrendFilter = input.bool(true, "Use HTF trend filter")
+
+useDynamicRiskSizing = input.bool(true, "Use dynamic risk sizing")
+baseRiskPercent = input.float(0.75, "Base risk %", minval=0.01, step=0.1)
+minRiskPercent = input.float(0.25, "Min risk %", minval=0.01, step=0.05)
+maxRiskPercent = input.float(1.0, "Max risk %", minval=0.01, step=0.1)
+maxPositionUsdt = input.float(300.0, "Max position USDT", minval=0.0, step=10.0)
+minPositionUsdt = input.float(20.0, "Min position USDT", minval=0.0, step=5.0)
+maxStopDistancePercent = input.float(3.0, "Max stop distance %", minval=0.1, step=0.1)
+minRewardRisk = input.float(1.5, "Min reward risk", minval=0.1, step=0.1)
+stopMethod = input.string("Wider of both", "Stop method", options=["Recent swing", "EMA50 ATR", "Wider of both"])
+recentStopBars = input.int(5, "Recent bars for stop", minval=1)
+useBreakEven = input.bool(false, "Use break even")
+breakEvenAfterR = input.float(1.0, "Break even after R", minval=0.1, step=0.1)
+useTrailingStop = input.bool(false, "Use trailing stop")
+trailingAtrMultiplier = input.float(1.5, "Trailing ATR multiplier", minval=0.1, step=0.1)
+useDailyLossProtection = input.bool(true, "Use daily loss protection")
+maxDailyLossPercent = input.float(3.0, "Max daily loss %", minval=0.1, step=0.1)
+
+useMarketRegimeFilter = input.bool(true, "Use market regime filter")
+useEmaFanRegimeFilter = input.bool(true, "Use EMA fan regime filter")
+minEmaSeparationAtr = input.float(0.15, "Min EMA separation ATR", minval=0.0, step=0.05)
+useEmaSlopeRegimeFilter = input.bool(true, "Use EMA slope regime filter")
+emaSlopeLookback = input.int(5, "EMA slope lookback", minval=1)
+minEmaSlopeAtr = input.float(0.05, "Min EMA slope ATR", minval=0.0, step=0.05)
+useAtrVolatilityRegimeFilter = input.bool(true, "Use ATR volatility regime filter")
+minAtrPercent = input.float(0.05, "Min ATR percent", minval=0.0, step=0.01)
+maxAtrPercent = input.float(1.50, "Max ATR percent", minval=0.0, step=0.05)
+useAdxRegimeFilter = input.bool(false, "Use ADX regime filter")
+adxLength = input.int(14, "ADX length", minval=1)
+minAdx = input.float(18.0, "Min ADX", minval=0.0, step=0.5)
+
+emaFast = ta.ema(close, emaFastLength)
+emaSlow = ta.ema(close, emaSlowLength)
+emaMacro = ta.ema(close, emaMacroLength)
+atr = ta.atr(atrLength)
+[plusDi, minusDi, adx] = ta.dmi(adxLength, adxLength)
+
+// HTF values use the previous completed HTF candle and lookahead_off, so this
+// lower-timeframe strategy never sees unfinished higher-timeframe data.
+htfClose = request.security(syminfo.tickerid, htfTimeframe, close[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfEmaFast = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, emaFastLength)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfEmaSlow = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, emaSlowLength)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+htfBullish = htfClose > htfEmaFast and htfEmaFast > htfEmaSlow
+htfBearish = htfClose < htfEmaFast and htfEmaFast < htfEmaSlow
+
+pullbackDist = atr * pullbackDistanceAtrMultiplier
+nearEmaFast = math.abs(close - emaFast) <= pullbackDist
+nearEmaSlow = math.abs(close - emaSlow) <= pullbackDist
+pullbackOk = nearEmaFast or nearEmaSlow
+
+canLong = directionMode == "Both" or directionMode == "Long only"
+canShort = directionMode == "Both" or directionMode == "Short only"
+htfLongOk = not useHtfTrendFilter or htfBullish
+htfShortOk = not useHtfTrendFilter or htfBearish
+localTrendLongOk = emaFast > emaSlow or close > emaMacro
+localTrendShortOk = emaFast < emaSlow or close < emaMacro
+macroLongOk = not useEma200Filter or close > emaMacro
+macroShortOk = not useEma200Filter or close < emaMacro
+bullishConfirmation = close > open
+bearishConfirmation = close < open
+
+emaSeparationAtr = atr > 0 ? math.abs(emaFast - emaSlow) / atr : na
+emaSlopeAtr = atr > 0 ? math.abs(emaSlow - emaSlow[emaSlopeLookback]) / atr : na
+atrPercent = close > 0 ? atr / close * 100.0 : na
+
+longEmaFanRegimeOk = not useEmaFanRegimeFilter or (emaFast > emaSlow and emaSeparationAtr >= minEmaSeparationAtr)
+shortEmaFanRegimeOk = not useEmaFanRegimeFilter or (emaFast < emaSlow and emaSeparationAtr >= minEmaSeparationAtr)
+longEmaSlopeRegimeOk = not useEmaSlopeRegimeFilter or (emaSlow > emaSlow[emaSlopeLookback] and emaSlopeAtr >= minEmaSlopeAtr)
+shortEmaSlopeRegimeOk = not useEmaSlopeRegimeFilter or (emaSlow < emaSlow[emaSlopeLookback] and emaSlopeAtr >= minEmaSlopeAtr)
+atrVolatilityRegimeOk = not useAtrVolatilityRegimeFilter or (atrPercent >= minAtrPercent and atrPercent <= maxAtrPercent)
+adxRegimeOk = not useAdxRegimeFilter or adx >= minAdx
+
+longRegimeRaw = longEmaFanRegimeOk and longEmaSlopeRegimeOk and atrVolatilityRegimeOk and adxRegimeOk
+shortRegimeRaw = shortEmaFanRegimeOk and shortEmaSlopeRegimeOk and atrVolatilityRegimeOk and adxRegimeOk
+longRegimeOk = not useMarketRegimeFilter or longRegimeRaw
+shortRegimeOk = not useMarketRegimeFilter or shortRegimeRaw
+
+recentLow = ta.lowest(low, recentStopBars)
+recentHigh = ta.highest(high, recentStopBars)
+
+longRecentStop = recentLow - atr * atrStopMultiplier
+longEmaStop = emaSlow - atr * atrStopMultiplier
+originalLongStopPlan = switch stopMethod
+    "Recent swing" => longRecentStop
+    "EMA50 ATR" => longEmaStop
+    => math.min(longRecentStop, longEmaStop)
+
+shortRecentStop = recentHigh + atr * atrStopMultiplier
+shortEmaStop = emaSlow + atr * atrStopMultiplier
+originalShortStopPlan = switch stopMethod
+    "Recent swing" => shortRecentStop
+    "EMA50 ATR" => shortEmaStop
+    => math.max(shortRecentStop, shortEmaStop)
+
+longStopPlan = useAtrStopBuffer ? originalLongStopPlan - atr * atrStopBufferMultiplier : originalLongStopPlan
+shortStopPlan = useAtrStopBuffer ? originalShortStopPlan + atr * atrStopBufferMultiplier : originalShortStopPlan
+
+longEntryPlan = close
+shortEntryPlan = close
+longStopDistance = longEntryPlan - longStopPlan
+shortStopDistance = shortStopPlan - shortEntryPlan
+longStopDistancePercent = longStopDistance > 0 ? longStopDistance / longEntryPlan * 100.0 : na
+shortStopDistancePercent = shortStopDistance > 0 ? shortStopDistance / shortEntryPlan * 100.0 : na
+rewardRiskOk = riskReward >= minRewardRisk
+longStopOk = longStopDistance > syminfo.mintick and longStopDistancePercent <= maxStopDistancePercent
+shortStopOk = shortStopDistance > syminfo.mintick and shortStopDistancePercent <= maxStopDistancePercent
+
+longQualityPoints = (
+     (htfBullish ? 1 : 0) +
+     (emaFast > emaSlow ? 1 : 0) +
+     (close > emaMacro ? 1 : 0) +
+     (pullbackOk ? 1 : 0) +
+     (bullishConfirmation ? 1 : 0) +
+     (close > emaFast ? 1 : 0) +
+     (longStopOk ? 1 : 0) +
+     (rewardRiskOk ? 1 : 0)
+)
+
+shortQualityPoints = (
+     (htfBearish ? 1 : 0) +
+     (emaFast < emaSlow ? 1 : 0) +
+     (close < emaMacro ? 1 : 0) +
+     (pullbackOk ? 1 : 0) +
+     (bearishConfirmation ? 1 : 0) +
+     (close < emaFast ? 1 : 0) +
+     (shortStopOk ? 1 : 0) +
+     (rewardRiskOk ? 1 : 0)
+)
+
+riskPercentFromQuality(points) =>
+    points >= 6 ? maxRiskPercent : points >= 4 ? baseRiskPercent : points >= 3 ? minRiskPercent : na
+
+longDynamicRiskPercent = useDynamicRiskSizing ? riskPercentFromQuality(longQualityPoints) : baseRiskPercent
+shortDynamicRiskPercent = useDynamicRiskSizing ? riskPercentFromQuality(shortQualityPoints) : baseRiskPercent
+
+longRiskCash = strategy.equity * longDynamicRiskPercent / 100.0
+shortRiskCash = strategy.equity * shortDynamicRiskPercent / 100.0
+longRiskQty = longStopDistance > syminfo.mintick ? longRiskCash / longStopDistance : na
+shortRiskQty = shortStopDistance > syminfo.mintick ? shortRiskCash / shortStopDistance : na
+longMaxQty = maxPositionUsdt > 0 ? maxPositionUsdt / longEntryPlan : longRiskQty
+shortMaxQty = maxPositionUsdt > 0 ? maxPositionUsdt / shortEntryPlan : shortRiskQty
+longQty = not na(longRiskQty) and not na(longMaxQty) ? math.min(longRiskQty, longMaxQty) : na
+shortQty = not na(shortRiskQty) and not na(shortMaxQty) ? math.min(shortRiskQty, shortMaxQty) : na
+longPositionUsdt = longQty * longEntryPlan
+shortPositionUsdt = shortQty * shortEntryPlan
+
+newDay = ta.change(time("D")) != 0
+var float dayStartEquity = na
+if na(dayStartEquity) or newDay
+    dayStartEquity := strategy.equity
+
+dailyLossPercent = dayStartEquity > 0 ? math.max((dayStartEquity - strategy.equity) / dayStartEquity * 100.0, 0.0) : 0.0
+dailyLossOk = not useDailyLossProtection or dailyLossPercent < maxDailyLossPercent
+
+baseLongSetup = barstate.isconfirmed and canLong and strategy.position_size == 0 and htfLongOk and localTrendLongOk and macroLongOk and pullbackOk and bullishConfirmation
+baseShortSetup = barstate.isconfirmed and canShort and strategy.position_size == 0 and htfShortOk and localTrendShortOk and macroShortOk and pullbackOk and bearishConfirmation
+
+longTradeOk = baseLongSetup and dailyLossOk and longQualityPoints >= 3 and not na(longDynamicRiskPercent) and longStopOk and rewardRiskOk and not na(longQty) and longQty > 0 and longPositionUsdt >= minPositionUsdt
+shortTradeOk = baseShortSetup and dailyLossOk and shortQualityPoints >= 3 and not na(shortDynamicRiskPercent) and shortStopOk and rewardRiskOk and not na(shortQty) and shortQty > 0 and shortPositionUsdt >= minPositionUsdt
+
+longSignalRaw = longTradeOk and not shortTradeOk
+shortSignalRaw = shortTradeOk and not longTradeOk
+longSignal = longSignalRaw and longRegimeOk
+shortSignal = shortSignalRaw and shortRegimeOk
+longBlockedByRegime = useMarketRegimeFilter and longSignalRaw and not longRegimeRaw
+shortBlockedByRegime = useMarketRegimeFilter and shortSignalRaw and not shortRegimeRaw
+
+var float activeLongStop = na
+var float activeLongTarget = na
+var float activeLongInitialRisk = na
+var float activeShortStop = na
+var float activeShortTarget = na
+var float activeShortInitialRisk = na
+
+if strategy.position_size == 0
+    activeLongStop := na
+    activeLongTarget := na
+    activeLongInitialRisk := na
+    activeShortStop := na
+    activeShortTarget := na
+    activeShortInitialRisk := na
+
+if longSignal
+    activeLongStop := longStopPlan
+    activeLongInitialRisk := longStopDistance
+    activeLongTarget := longEntryPlan + longStopDistance * riskReward
+    strategy.entry("Long", strategy.long, qty=longQty)
+    strategy.exit("Long exit", from_entry="Long", stop=activeLongStop, limit=activeLongTarget)
+    label.new(bar_index, low, "Q " + str.tostring(longQualityPoints) + "\nRisk " + str.tostring(longDynamicRiskPercent, "#.##") + "%\nUSDT " + str.tostring(longPositionUsdt, "#.##") + "\nStop " + str.tostring(longStopDistancePercent, "#.##") + "%\nRisk $" + str.tostring(longRiskCash, "#.##"), style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+
+if shortSignal
+    activeShortStop := shortStopPlan
+    activeShortInitialRisk := shortStopDistance
+    activeShortTarget := shortEntryPlan - shortStopDistance * riskReward
+    strategy.entry("Short", strategy.short, qty=shortQty)
+    strategy.exit("Short exit", from_entry="Short", stop=activeShortStop, limit=activeShortTarget)
+    label.new(bar_index, high, "Q " + str.tostring(shortQualityPoints) + "\nRisk " + str.tostring(shortDynamicRiskPercent, "#.##") + "%\nUSDT " + str.tostring(shortPositionUsdt, "#.##") + "\nStop " + str.tostring(shortStopDistancePercent, "#.##") + "%\nRisk $" + str.tostring(shortRiskCash, "#.##"), style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+if strategy.position_size > 0 and not na(activeLongStop) and not na(activeLongTarget) and not na(activeLongInitialRisk)
+    if useBreakEven and high >= strategy.position_avg_price + activeLongInitialRisk * breakEvenAfterR
+        activeLongStop := math.max(activeLongStop, strategy.position_avg_price)
+    if useTrailingStop
+        activeLongStop := math.max(activeLongStop, close - atr * trailingAtrMultiplier)
+    strategy.exit("Long exit", from_entry="Long", stop=activeLongStop, limit=activeLongTarget)
+
+if strategy.position_size < 0 and not na(activeShortStop) and not na(activeShortTarget) and not na(activeShortInitialRisk)
+    if useBreakEven and low <= strategy.position_avg_price - activeShortInitialRisk * breakEvenAfterR
+        activeShortStop := math.min(activeShortStop, strategy.position_avg_price)
+    if useTrailingStop
+        activeShortStop := math.min(activeShortStop, close + atr * trailingAtrMultiplier)
+    strategy.exit("Short exit", from_entry="Short", stop=activeShortStop, limit=activeShortTarget)
+
+plot(emaFast, "EMA fast", color=color.new(color.teal, 0), linewidth=1)
+plot(emaSlow, "EMA slow", color=color.new(color.orange, 0), linewidth=1)
+plot(emaMacro, "EMA macro", color=color.new(color.purple, 0), linewidth=2)
+
+plotshape(useMarketRegimeFilter and longRegimeRaw, title="Long regime OK", style=shape.circle, location=location.belowbar, color=color.new(color.green, 65), size=size.tiny, text="R")
+plotshape(useMarketRegimeFilter and shortRegimeRaw, title="Short regime OK", style=shape.circle, location=location.abovebar, color=color.new(color.red, 65), size=size.tiny, text="R")
+plotshape(longBlockedByRegime, title="Long blocked by regime", style=shape.xcross, location=location.belowbar, color=color.new(color.gray, 0), size=size.tiny, text="MR")
+plotshape(shortBlockedByRegime, title="Short blocked by regime", style=shape.xcross, location=location.abovebar, color=color.new(color.gray, 0), size=size.tiny, text="MR")
+plotshape(longSignal, title="Long signal", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.small, text="LONG")
+plotshape(shortSignal, title="Short signal", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.small, text="SHORT")
+
+plot(strategy.position_size > 0 ? activeLongStop : na, "Long stop", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(strategy.position_size > 0 ? activeLongTarget : na, "Long take profit", color=color.new(color.green, 0), style=plot.style_linebr)
+plot(strategy.position_size < 0 ? activeShortStop : na, "Short stop", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(strategy.position_size < 0 ? activeShortTarget : na, "Short take profit", color=color.new(color.green, 0), style=plot.style_linebr)
