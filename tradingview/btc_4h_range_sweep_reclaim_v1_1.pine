@@ -1,0 +1,231 @@
+//@version=6
+indicator("BTC 4H Range Sweep/Reclaim v1.1", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+
+nyStartHour = input.int(0, "New York session start hour", minval=0, maxval=23)
+rangeHours = input.int(4, "Range hours", minval=1, maxval=12)
+showRangeBox = input.bool(true, "Show range box")
+showSweepLabels = input.bool(true, "Show sweep labels")
+showReclaimLabels = input.bool(true, "Show reclaim labels")
+showTheoreticalLevels = input.bool(true, "Show theoretical SL/TP")
+showDashboard = input.bool(true, "Show dashboard")
+dashboardPositionInput = input.string("Bottom left", "Dashboard position", options=["Top right", "Top left", "Bottom right", "Bottom left"])
+useMaxBreakoutAtrFilter = input.bool(true, "Use max breakout ATR filter")
+maxBreakoutAtr = input.float(2.0, "Max breakout ATR", minval=0.1, step=0.1)
+useAtrStopBuffer = input.bool(true, "Use ATR stop buffer")
+atrStopBufferMultiplier = input.float(0.2, "ATR stop buffer multiplier", minval=0.0, step=0.1)
+atrLength = input.int(14, "ATR length", minval=1)
+
+nyTimezone = "America/New_York"
+atr = ta.atr(atrLength)
+
+nyHour = hour(time, nyTimezone)
+nyMinute = minute(time, nyTimezone)
+nyMinuteOfDay = nyHour * 60 + nyMinute
+nyDayKey = year(time, nyTimezone) * 10000 + month(time, nyTimezone) * 100 + dayofmonth(time, nyTimezone)
+nyDayChange = ta.change(nyDayKey)
+newNyDay = not na(nyDayChange) and nyDayChange != 0
+
+rangeStartMinute = nyStartHour * 60
+rangeEndMinuteRaw = rangeStartMinute + rangeHours * 60
+rangeEndMinute = rangeEndMinuteRaw % 1440
+rangeWindow = rangeEndMinuteRaw <= 1440 ? nyMinuteOfDay >= rangeStartMinute and nyMinuteOfDay < rangeEndMinuteRaw : nyMinuteOfDay >= rangeStartMinute or nyMinuteOfDay < rangeEndMinute
+priorRangeWindow = rangeWindow[1] == true
+rangeStarted = rangeWindow and (not priorRangeWindow or newNyDay)
+rangeEnded = not rangeWindow and priorRangeWindow
+
+var float rangeHigh = na
+var float rangeLow = na
+var int rangeStartBar = na
+var int rangeEndBar = na
+var bool rangeLocked = false
+var string rangeStatus = "Waiting"
+var bool sweptHigh = false
+var bool sweptLow = false
+var bool reclaimedHigh = false
+var bool reclaimedLow = false
+var float breakoutHigh = na
+var float breakoutLow = na
+var float latestEntry = na
+var float latestStop = na
+var float latestTp1 = na
+var float latestTp2 = na
+var float latestStopDistanceAtr = na
+var string latestTpText = "-"
+
+var line rangeHighLine = na
+var line rangeLowLine = na
+var box rangeBox = na
+var line stopLine = na
+var line tp1Line = na
+var line tp2Line = na
+
+if newNyDay
+    rangeHigh := na
+    rangeLow := na
+    rangeStartBar := na
+    rangeEndBar := na
+    rangeLocked := false
+    rangeStatus := "Waiting"
+    sweptHigh := false
+    sweptLow := false
+    reclaimedHigh := false
+    reclaimedLow := false
+    breakoutHigh := na
+    breakoutLow := na
+    latestEntry := na
+    latestStop := na
+    latestTp1 := na
+    latestTp2 := na
+    latestStopDistanceAtr := na
+    latestTpText := "-"
+    rangeHighLine := na
+    rangeLowLine := na
+    rangeBox := na
+    stopLine := na
+    tp1Line := na
+    tp2Line := na
+
+if rangeStarted
+    rangeHigh := high
+    rangeLow := low
+    rangeStartBar := bar_index
+    rangeEndBar := na
+    rangeLocked := false
+    rangeStatus := "Active"
+    sweptHigh := false
+    sweptLow := false
+    reclaimedHigh := false
+    reclaimedLow := false
+    breakoutHigh := na
+    breakoutLow := na
+    if showRangeBox
+        rangeBox := box.new(rangeStartBar, rangeHigh, bar_index, rangeLow, bgcolor=color.new(color.blue, 88), border_color=color.new(color.blue, 35))
+
+if rangeWindow and not na(rangeStartBar)
+    rangeHigh := math.max(nz(rangeHigh, high), high)
+    rangeLow := math.min(nz(rangeLow, low), low)
+    if showRangeBox and not na(rangeBox)
+        box.set_top(rangeBox, rangeHigh)
+        box.set_bottom(rangeBox, rangeLow)
+        box.set_right(rangeBox, bar_index)
+
+if rangeEnded and not na(rangeHigh) and not na(rangeLow)
+    rangeLocked := true
+    rangeEndBar := bar_index - 1
+    rangeStatus := "Active"
+    rangeHighLine := line.new(rangeEndBar, rangeHigh, bar_index, rangeHigh, color=color.new(color.red, 0), width=2)
+    rangeLowLine := line.new(rangeEndBar, rangeLow, bar_index, rangeLow, color=color.new(color.green, 0), width=2)
+    label.new(rangeEndBar, rangeHigh, "4H RANGE HIGH", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+    label.new(rangeEndBar, rangeLow, "4H RANGE LOW", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
+
+if rangeLocked and not newNyDay
+    if not na(rangeHighLine)
+        line.set_x2(rangeHighLine, bar_index)
+    if not na(rangeLowLine)
+        line.set_x2(rangeLowLine, bar_index)
+    if showRangeBox and not na(rangeBox)
+        box.set_right(rangeBox, bar_index)
+    if not na(stopLine)
+        line.set_x2(stopLine, bar_index)
+    if not na(tp1Line)
+        line.set_x2(tp1Line, bar_index)
+    if not na(tp2Line)
+        line.set_x2(tp2Line, bar_index)
+
+insideRange = rangeLocked and close <= rangeHigh and close >= rangeLow
+aboveRange = rangeLocked and close > rangeHigh
+belowRange = rangeLocked and close < rangeLow
+breakoutHighDistanceAtr = rangeLocked and atr > 0 ? (close - rangeHigh) / atr : na
+breakoutLowDistanceAtr = rangeLocked and atr > 0 ? (rangeLow - close) / atr : na
+validHighBreakoutSize = not useMaxBreakoutAtrFilter or (not na(breakoutHighDistanceAtr) and breakoutHighDistanceAtr <= maxBreakoutAtr)
+validLowBreakoutSize = not useMaxBreakoutAtrFilter or (not na(breakoutLowDistanceAtr) and breakoutLowDistanceAtr <= maxBreakoutAtr)
+
+newSweepHigh = rangeLocked and not sweptHigh and aboveRange and validHighBreakoutSize
+newSweepLow = rangeLocked and not sweptLow and belowRange and validLowBreakoutSize
+
+if newSweepHigh
+    sweptHigh := true
+    breakoutHigh := high
+    rangeStatus := "Swept High"
+    if showSweepLabels
+        label.new(bar_index, high, "SWEEP HIGH", style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+
+if newSweepLow
+    sweptLow := true
+    breakoutLow := low
+    rangeStatus := "Swept Low"
+    if showSweepLabels
+        label.new(bar_index, low, "SWEEP LOW", style=label.style_label_up, color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+
+if sweptHigh and not reclaimedHigh and aboveRange
+    breakoutHigh := math.max(nz(breakoutHigh, high), high)
+
+if sweptLow and not reclaimedLow and belowRange
+    breakoutLow := math.min(nz(breakoutLow, low), low)
+
+newReclaimShort = sweptHigh and not reclaimedHigh and insideRange
+newReclaimLong = sweptLow and not reclaimedLow and insideRange
+
+atrStopBuffer = useAtrStopBuffer ? atr * atrStopBufferMultiplier : 0.0
+
+if newReclaimShort
+    reclaimedHigh := true
+    rangeStatus := "Reclaimed High"
+    latestEntry := close
+    latestStop := nz(breakoutHigh, high) + atrStopBuffer
+    shortRisk = latestStop - latestEntry
+    latestTp1 := latestEntry - shortRisk
+    latestTp2 := latestEntry - shortRisk * 2.0
+    latestStopDistanceAtr := atr > 0 ? shortRisk / atr : na
+    latestTpText := "1R " + str.tostring(latestTp1, format.mintick) + " / 2R " + str.tostring(latestTp2, format.mintick)
+    if showReclaimLabels
+        label.new(bar_index, high, "RECLAIM SHORT", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+    if showTheoreticalLevels and shortRisk > syminfo.mintick
+        stopLine := line.new(bar_index, latestStop, bar_index, latestStop, color=color.new(color.red, 0), style=line.style_dashed, width=1)
+        tp1Line := line.new(bar_index, latestTp1, bar_index, latestTp1, color=color.new(color.green, 0), style=line.style_dotted, width=1)
+        tp2Line := line.new(bar_index, latestTp2, bar_index, latestTp2, color=color.new(color.green, 0), style=line.style_dashed, width=1)
+
+if newReclaimLong
+    reclaimedLow := true
+    rangeStatus := "Reclaimed Low"
+    latestEntry := close
+    latestStop := nz(breakoutLow, low) - atrStopBuffer
+    longRisk = latestEntry - latestStop
+    latestTp1 := latestEntry + longRisk
+    latestTp2 := latestEntry + longRisk * 2.0
+    latestStopDistanceAtr := atr > 0 ? longRisk / atr : na
+    latestTpText := "1R " + str.tostring(latestTp1, format.mintick) + " / 2R " + str.tostring(latestTp2, format.mintick)
+    if showReclaimLabels
+        label.new(bar_index, low, "RECLAIM LONG", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+    if showTheoreticalLevels and longRisk > syminfo.mintick
+        stopLine := line.new(bar_index, latestStop, bar_index, latestStop, color=color.new(color.red, 0), style=line.style_dashed, width=1)
+        tp1Line := line.new(bar_index, latestTp1, bar_index, latestTp1, color=color.new(color.green, 0), style=line.style_dotted, width=1)
+        tp2Line := line.new(bar_index, latestTp2, bar_index, latestTp2, color=color.new(color.green, 0), style=line.style_dashed, width=1)
+
+positionText = not rangeLocked ? "N/A" : aboveRange ? "Above" : belowRange ? "Below" : "Inside"
+suggestedBias = rangeStatus == "Reclaimed Low" ? "LONG" : rangeStatus == "Reclaimed High" ? "SHORT" : "WAIT"
+statusColor = rangeStatus == "Reclaimed Low" ? color.new(color.green, 0) : rangeStatus == "Reclaimed High" ? color.new(color.red, 0) : rangeStatus == "Swept Low" or rangeStatus == "Swept High" ? color.new(color.orange, 0) : rangeStatus == "Active" ? color.new(color.blue, 10) : color.new(color.gray, 25)
+biasColor = suggestedBias == "LONG" ? color.new(color.green, 0) : suggestedBias == "SHORT" ? color.new(color.red, 0) : color.new(color.gray, 25)
+
+dashboardPosition = switch dashboardPositionInput
+    "Top right" => position.top_right
+    "Top left" => position.top_left
+    "Bottom right" => position.bottom_right
+    => position.bottom_left
+
+var table dashboard = table.new(dashboardPosition, 2, 6, border_width=1)
+
+setRow(row, labelText, valueText, bgColor) =>
+    table.cell(dashboard, 0, row, labelText, text_color=color.white, bgcolor=color.new(color.black, 0))
+    table.cell(dashboard, 1, row, valueText, text_color=color.white, bgcolor=bgColor)
+
+if barstate.islast
+    if showDashboard
+        setRow(0, "Status", rangeStatus, statusColor)
+        setRow(1, "High / Low", (na(rangeHigh) ? "-" : str.tostring(rangeHigh, format.mintick)) + " / " + (na(rangeLow) ? "-" : str.tostring(rangeLow, format.mintick)), color.new(color.gray, 20))
+        setRow(2, "Price", positionText, positionText == "Above" ? color.new(color.red, 10) : positionText == "Below" ? color.new(color.green, 10) : color.new(color.gray, 25))
+        setRow(3, "Bias", suggestedBias, biasColor)
+        setRow(4, "Stop ATR", na(latestStopDistanceAtr) ? "-" : str.tostring(latestStopDistanceAtr, "#.##"), color.new(color.orange, 20))
+        setRow(5, "TP", latestTpText, color.new(color.blue, 20))
+    else
+        table.clear(dashboard, 0, 0, 1, 5)

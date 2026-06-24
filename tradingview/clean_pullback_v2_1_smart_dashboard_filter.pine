@@ -1,0 +1,339 @@
+//@version=6
+strategy("Clean Pullback v2.1 Smart Dashboard Filter", overlay=true, pyramiding=0, process_orders_on_close=true, calc_on_every_tick=false, initial_capital=1000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1, margin_long=100, margin_short=100)
+
+directionMode = input.string("Both", "Direction mode", options=["Both", "Long only", "Short only"])
+htfTimeframe = input.timeframe("60", "HTF timeframe")
+emaFastLength = input.int(20, "EMA fast length", minval=1)
+emaSlowLength = input.int(50, "EMA slow length", minval=1)
+emaMacroLength = input.int(200, "EMA macro length", minval=1)
+atrLength = input.int(14, "ATR length", minval=1)
+atrStopMultiplier = input.float(1.5, "ATR stop multiplier", minval=0.1, step=0.1)
+useAtrStopBuffer = input.bool(true, "Use ATR stop buffer")
+atrStopBufferMultiplier = input.float(0.17, "ATR stop buffer multiplier", minval=0.0, step=0.1)
+riskReward = input.float(2.0, "Risk reward", minval=0.1, step=0.1)
+pullbackDistanceAtrMultiplier = input.float(0.8, "Pullback distance ATR multiplier", minval=0.0, step=0.1)
+useEma200Filter = input.bool(true, "Use EMA200 filter")
+useHtfTrendFilter = input.bool(true, "Use HTF trend filter")
+
+useDynamicRiskSizing = input.bool(true, "Use dynamic risk sizing")
+baseRiskPercent = input.float(0.75, "Base risk %", minval=0.01, step=0.1)
+minRiskPercent = input.float(0.25, "Min risk %", minval=0.01, step=0.05)
+maxRiskPercent = input.float(1.0, "Max risk %", minval=0.01, step=0.1)
+maxPositionUsdt = input.float(300.0, "Max position USDT", minval=0.0, step=10.0)
+minPositionUsdt = input.float(20.0, "Min position USDT", minval=0.0, step=5.0)
+maxStopDistancePercent = input.float(3.0, "Max stop distance %", minval=0.1, step=0.1)
+minRewardRisk = input.float(1.5, "Min reward risk", minval=0.1, step=0.1)
+stopMethod = input.string("Wider of both", "Stop method", options=["Recent swing", "EMA50 ATR", "Wider of both"])
+recentStopBars = input.int(5, "Recent bars for stop", minval=1)
+useBreakEven = input.bool(false, "Use break even")
+breakEvenAfterR = input.float(1.0, "Break even after R", minval=0.1, step=0.1)
+useTrailingStop = input.bool(false, "Use trailing stop")
+trailingAtrMultiplier = input.float(1.5, "Trailing ATR multiplier", minval=0.1, step=0.1)
+useDailyLossProtection = input.bool(true, "Use daily loss protection")
+maxDailyLossPercent = input.float(3.0, "Max daily loss %", minval=0.1, step=0.1)
+dashboardFilterMode = input.string("Off", "Dashboard filter mode", options=["Off", "Soft", "Strict", "Smart"])
+smartMinScore = input.int(60, "Smart min score", minval=0, maxval=100)
+smartOppositeScoreGap = input.int(25, "Smart opposite score gap", minval=0, maxval=100)
+smartBlockStrongOppositeCandle = input.bool(true, "Smart block strong opposite candle")
+smartBlockOppositeEmaFan = input.bool(true, "Smart block opposite EMA fan")
+smartBlockOppositeHtfTrend = input.bool(true, "Smart block opposite HTF trend")
+useRunnerExit = input.bool(false, "Use runner exit")
+showDebugTable = input.bool(true, "Show debug table")
+showBlockedSignals = input.bool(true, "Show blocked signals")
+
+emaFast = ta.ema(close, emaFastLength)
+emaSlow = ta.ema(close, emaSlowLength)
+emaMacro = ta.ema(close, emaMacroLength)
+atr = ta.atr(atrLength)
+
+// HTF values use the previous completed HTF candle and lookahead_off, so this
+// lower-timeframe strategy never sees unfinished higher-timeframe data.
+htfClose = request.security(syminfo.tickerid, htfTimeframe, close[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfEmaFast = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, emaFastLength)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfEmaSlow = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, emaSlowLength)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+htfBullish = htfClose > htfEmaFast and htfEmaFast > htfEmaSlow
+htfBearish = htfClose < htfEmaFast and htfEmaFast < htfEmaSlow
+
+pullbackDist = atr * pullbackDistanceAtrMultiplier
+nearEmaFast = math.abs(close - emaFast) <= pullbackDist
+nearEmaSlow = math.abs(close - emaSlow) <= pullbackDist
+pullbackOk = nearEmaFast or nearEmaSlow
+
+// Internal dashboard engine based on BTC Confluence Dashboard v1.1. The strategy
+// does not depend on the external indicator; these values are calculated here.
+dashboardMinEmaSeparationAtr = 0.15
+dashboardMinActionableLongScore = 70
+dashboardMinActionableShortScore = 70
+dashboardMaxCandleDistanceFromEma20Atr = 1.5
+dashboardEmaFanBullishClean = emaFast > emaSlow and emaSlow > emaMacro
+dashboardEmaFanBearishClean = emaFast < emaSlow and emaSlow < emaMacro
+dashboardEmaFanText = dashboardEmaFanBullishClean ? "Bullish clean" : dashboardEmaFanBearishClean ? "Bearish clean" : "Choppy"
+dashboardEmaSeparationAtr = atr > 0 ? math.abs(emaFast - emaSlow) / atr : na
+dashboardEmaSeparationValid = not na(dashboardEmaSeparationAtr) and dashboardEmaSeparationAtr >= dashboardMinEmaSeparationAtr
+dashboardAtrPercent = close > 0 ? atr / close * 100.0 : na
+dashboardAtrVolatilityLow = not na(dashboardAtrPercent) and dashboardAtrPercent < 0.05
+dashboardAtrVolatilityNormal = not na(dashboardAtrPercent) and dashboardAtrPercent >= 0.05 and dashboardAtrPercent <= 1.5
+dashboardAtrVolatilityHigh = not na(dashboardAtrPercent) and dashboardAtrPercent > 1.5
+dashboardAtrText = dashboardAtrVolatilityLow ? "Low" : dashboardAtrVolatilityHigh ? "High" : dashboardAtrVolatilityNormal ? "Normal" : "N/A"
+dashboardPriceDistanceFromEma20Atr = atr > 0 ? math.abs(close - emaFast) / atr : na
+dashboardLateLong = close > emaFast and not na(dashboardPriceDistanceFromEma20Atr) and dashboardPriceDistanceFromEma20Atr > dashboardMaxCandleDistanceFromEma20Atr
+dashboardLateShort = close < emaFast and not na(dashboardPriceDistanceFromEma20Atr) and dashboardPriceDistanceFromEma20Atr > dashboardMaxCandleDistanceFromEma20Atr
+dashboardPullbackOkRaw = nearEmaFast or nearEmaSlow
+dashboardPullbackOk = dashboardPullbackOkRaw and not dashboardLateLong and not dashboardLateShort
+dashboardLongPullbackZone = dashboardPullbackOk and (emaFast > emaSlow or htfBullish)
+dashboardShortPullbackZone = dashboardPullbackOk and (emaFast < emaSlow or htfBearish)
+dashboardPullbackText = dashboardLongPullbackZone and not dashboardShortPullbackZone ? "Long zone" : dashboardShortPullbackZone and not dashboardLongPullbackZone ? "Short zone" : dashboardPullbackOk ? "Mixed zone" : dashboardPullbackOkRaw ? "Late/no zone" : "No zone"
+dashboardBody = math.abs(close - open)
+dashboardAverageBody = ta.sma(dashboardBody, 10)
+dashboardBullishCandle = close > open
+dashboardBearishCandle = close < open
+dashboardStrongBullish = dashboardBullishCandle and dashboardBody > dashboardAverageBody * 1.2
+dashboardStrongBearish = dashboardBearishCandle and dashboardBody > dashboardAverageBody * 1.2
+dashboardCandleMomentum = dashboardStrongBullish ? "Strong bullish" : dashboardStrongBearish ? "Strong bearish" : dashboardBullishCandle ? "Bullish" : dashboardBearishCandle ? "Bearish" : "Neutral"
+dashboardLongScore = (htfBullish ? 25 : 0) + (dashboardEmaFanBullishClean ? 20 : 0) + (dashboardLongPullbackZone ? 20 : 0) + (dashboardStrongBullish ? 15 : 0) + (dashboardAtrVolatilityNormal ? 10 : 0) + (dashboardEmaSeparationValid ? 10 : 0)
+dashboardShortScore = (htfBearish ? 25 : 0) + (dashboardEmaFanBearishClean ? 20 : 0) + (dashboardShortPullbackZone ? 20 : 0) + (dashboardStrongBearish ? 15 : 0) + (dashboardAtrVolatilityNormal ? 10 : 0) + (dashboardEmaSeparationValid ? 10 : 0)
+dashboardBiasLong = dashboardLongScore >= dashboardMinActionableLongScore and dashboardLongScore > dashboardShortScore
+dashboardBiasShort = dashboardShortScore >= dashboardMinActionableShortScore and dashboardShortScore > dashboardLongScore
+dashboardFinalBias = dashboardBiasLong ? "LONG" : dashboardBiasShort ? "SHORT" : "WAIT"
+dashboardLongTrendOk = htfBullish and dashboardEmaFanBullishClean and dashboardEmaSeparationValid and dashboardAtrVolatilityNormal
+dashboardShortTrendOk = htfBearish and dashboardEmaFanBearishClean and dashboardEmaSeparationValid and dashboardAtrVolatilityNormal
+dashboardLongTriggerOk = dashboardStrongBullish
+dashboardShortTriggerOk = dashboardStrongBearish
+dashboardEntryLongRaw = dashboardLongScore >= dashboardMinActionableLongScore and dashboardLongScore > dashboardShortScore and dashboardLongTrendOk and dashboardLongPullbackZone and dashboardLongTriggerOk
+dashboardEntryShortRaw = dashboardShortScore >= dashboardMinActionableShortScore and dashboardShortScore > dashboardLongScore and dashboardShortTrendOk and dashboardShortPullbackZone and dashboardShortTriggerOk
+dashboardEntryLong = dashboardEntryLongRaw and not dashboardLateLong
+dashboardEntryShort = dashboardEntryShortRaw and not dashboardLateShort
+dashboardReadyLong = dashboardLongTrendOk and dashboardLongPullbackZone and not dashboardLongTriggerOk and dashboardLongScore >= dashboardMinActionableLongScore - 15
+dashboardReadyShort = dashboardShortTrendOk and dashboardShortPullbackZone and not dashboardShortTriggerOk and dashboardShortScore >= dashboardMinActionableShortScore - 15
+dashboardWatchLong = dashboardLongTrendOk and not dashboardLongPullbackZone and not dashboardEntryLong
+dashboardWatchShort = dashboardShortTrendOk and not dashboardShortPullbackZone and not dashboardEntryShort
+dashboardLateLongState = dashboardEntryLongRaw and dashboardLateLong
+dashboardLateShortState = dashboardEntryShortRaw and dashboardLateShort
+dashboardActionState = dashboardLateLongState ? "LATE LONG" : dashboardLateShortState ? "LATE SHORT" : dashboardEntryLong ? "ENTRY LONG" : dashboardEntryShort ? "ENTRY SHORT" : dashboardReadyLong ? "READY LONG" : dashboardReadyShort ? "READY SHORT" : dashboardWatchLong ? "WATCH LONG" : dashboardWatchShort ? "WATCH SHORT" : "WAIT"
+
+canLong = directionMode == "Both" or directionMode == "Long only"
+canShort = directionMode == "Both" or directionMode == "Short only"
+htfLongOk = not useHtfTrendFilter or htfBullish
+htfShortOk = not useHtfTrendFilter or htfBearish
+localTrendLongOk = emaFast > emaSlow or close > emaMacro
+localTrendShortOk = emaFast < emaSlow or close < emaMacro
+macroLongOk = not useEma200Filter or close > emaMacro
+macroShortOk = not useEma200Filter or close < emaMacro
+bullishConfirmation = close > open
+bearishConfirmation = close < open
+
+recentLow = ta.lowest(low, recentStopBars)
+recentHigh = ta.highest(high, recentStopBars)
+
+longRecentStop = recentLow - atr * atrStopMultiplier
+longEmaStop = emaSlow - atr * atrStopMultiplier
+originalLongStopPlan = switch stopMethod
+    "Recent swing" => longRecentStop
+    "EMA50 ATR" => longEmaStop
+    => math.min(longRecentStop, longEmaStop)
+
+shortRecentStop = recentHigh + atr * atrStopMultiplier
+shortEmaStop = emaSlow + atr * atrStopMultiplier
+originalShortStopPlan = switch stopMethod
+    "Recent swing" => shortRecentStop
+    "EMA50 ATR" => shortEmaStop
+    => math.max(shortRecentStop, shortEmaStop)
+
+longStopPlan = useAtrStopBuffer ? originalLongStopPlan - atr * atrStopBufferMultiplier : originalLongStopPlan
+shortStopPlan = useAtrStopBuffer ? originalShortStopPlan + atr * atrStopBufferMultiplier : originalShortStopPlan
+
+longEntryPlan = close
+shortEntryPlan = close
+longStopDistance = longEntryPlan - longStopPlan
+shortStopDistance = shortStopPlan - shortEntryPlan
+longStopDistancePercent = longStopDistance > 0 ? longStopDistance / longEntryPlan * 100.0 : na
+shortStopDistancePercent = shortStopDistance > 0 ? shortStopDistance / shortEntryPlan * 100.0 : na
+rewardRiskOk = riskReward >= minRewardRisk
+longStopOk = longStopDistance > syminfo.mintick and longStopDistancePercent <= maxStopDistancePercent
+shortStopOk = shortStopDistance > syminfo.mintick and shortStopDistancePercent <= maxStopDistancePercent
+
+longQualityPoints = (
+     (htfBullish ? 1 : 0) +
+     (emaFast > emaSlow ? 1 : 0) +
+     (close > emaMacro ? 1 : 0) +
+     (pullbackOk ? 1 : 0) +
+     (bullishConfirmation ? 1 : 0) +
+     (close > emaFast ? 1 : 0) +
+     (longStopOk ? 1 : 0) +
+     (rewardRiskOk ? 1 : 0)
+)
+
+shortQualityPoints = (
+     (htfBearish ? 1 : 0) +
+     (emaFast < emaSlow ? 1 : 0) +
+     (close < emaMacro ? 1 : 0) +
+     (pullbackOk ? 1 : 0) +
+     (bearishConfirmation ? 1 : 0) +
+     (close < emaFast ? 1 : 0) +
+     (shortStopOk ? 1 : 0) +
+     (rewardRiskOk ? 1 : 0)
+)
+
+riskPercentFromQuality(points) =>
+    points >= 6 ? maxRiskPercent : points >= 4 ? baseRiskPercent : points >= 3 ? minRiskPercent : na
+
+longDynamicRiskPercent = useDynamicRiskSizing ? riskPercentFromQuality(longQualityPoints) : baseRiskPercent
+shortDynamicRiskPercent = useDynamicRiskSizing ? riskPercentFromQuality(shortQualityPoints) : baseRiskPercent
+
+longRiskCash = strategy.equity * longDynamicRiskPercent / 100.0
+shortRiskCash = strategy.equity * shortDynamicRiskPercent / 100.0
+longRiskQty = longStopDistance > syminfo.mintick ? longRiskCash / longStopDistance : na
+shortRiskQty = shortStopDistance > syminfo.mintick ? shortRiskCash / shortStopDistance : na
+longMaxQty = maxPositionUsdt > 0 ? maxPositionUsdt / longEntryPlan : longRiskQty
+shortMaxQty = maxPositionUsdt > 0 ? maxPositionUsdt / shortEntryPlan : shortRiskQty
+longQty = not na(longRiskQty) and not na(longMaxQty) ? math.min(longRiskQty, longMaxQty) : na
+shortQty = not na(shortRiskQty) and not na(shortMaxQty) ? math.min(shortRiskQty, shortMaxQty) : na
+longPositionUsdt = longQty * longEntryPlan
+shortPositionUsdt = shortQty * shortEntryPlan
+
+newDay = ta.change(time("D")) != 0
+var float dayStartEquity = na
+if na(dayStartEquity) or newDay
+    dayStartEquity := strategy.equity
+
+dailyLossPercent = dayStartEquity > 0 ? math.max((dayStartEquity - strategy.equity) / dayStartEquity * 100.0, 0.0) : 0.0
+dailyLossOk = not useDailyLossProtection or dailyLossPercent < maxDailyLossPercent
+
+baseLongSetup = barstate.isconfirmed and canLong and strategy.position_size == 0 and htfLongOk and localTrendLongOk and macroLongOk and pullbackOk and bullishConfirmation
+baseShortSetup = barstate.isconfirmed and canShort and strategy.position_size == 0 and htfShortOk and localTrendShortOk and macroShortOk and pullbackOk and bearishConfirmation
+
+longTradeOk = baseLongSetup and dailyLossOk and longQualityPoints >= 3 and not na(longDynamicRiskPercent) and longStopOk and rewardRiskOk and not na(longQty) and longQty > 0 and longPositionUsdt >= minPositionUsdt
+shortTradeOk = baseShortSetup and dailyLossOk and shortQualityPoints >= 3 and not na(shortDynamicRiskPercent) and shortStopOk and rewardRiskOk and not na(shortQty) and shortQty > 0 and shortPositionUsdt >= minPositionUsdt
+
+longSignalRaw = longTradeOk and not shortTradeOk
+shortSignalRaw = shortTradeOk and not longTradeOk
+dashboardSoftLongOk = not dashboardBiasShort
+dashboardSoftShortOk = not dashboardBiasLong
+dashboardStrictLongOk = dashboardBiasLong or dashboardReadyLong
+dashboardStrictShortOk = dashboardBiasShort or dashboardReadyShort
+smartLongScoreOk = dashboardLongScore >= smartMinScore
+smartShortScoreOk = dashboardShortScore >= smartMinScore
+smartLongOppositeScoreBlock = dashboardShortScore >= dashboardLongScore + smartOppositeScoreGap
+smartShortOppositeScoreBlock = dashboardLongScore >= dashboardShortScore + smartOppositeScoreGap
+smartLongHtfBlock = smartBlockOppositeHtfTrend and htfBearish
+smartShortHtfBlock = smartBlockOppositeHtfTrend and htfBullish
+smartLongEmaFanBlock = smartBlockOppositeEmaFan and dashboardEmaFanBearishClean and dashboardEmaSeparationValid
+smartShortEmaFanBlock = smartBlockOppositeEmaFan and dashboardEmaFanBullishClean and dashboardEmaSeparationValid
+smartLongCandleBlock = smartBlockStrongOppositeCandle and dashboardStrongBearish
+smartShortCandleBlock = smartBlockStrongOppositeCandle and dashboardStrongBullish
+dashboardSmartLongOk = smartLongScoreOk and not smartLongOppositeScoreBlock and not smartLongHtfBlock and not smartLongEmaFanBlock and not smartLongCandleBlock
+dashboardSmartShortOk = smartShortScoreOk and not smartShortOppositeScoreBlock and not smartShortHtfBlock and not smartShortEmaFanBlock and not smartShortCandleBlock
+smartLongBlockReason = not smartLongScoreOk ? "L score < min" : smartLongOppositeScoreBlock ? "Short score gap" : smartLongHtfBlock ? "HTF bearish" : smartLongEmaFanBlock ? "EMA fan bearish" : smartLongCandleBlock ? "Strong bear candle" : "-"
+smartShortBlockReason = not smartShortScoreOk ? "S score < min" : smartShortOppositeScoreBlock ? "Long score gap" : smartShortHtfBlock ? "HTF bullish" : smartShortEmaFanBlock ? "EMA fan bullish" : smartShortCandleBlock ? "Strong bull candle" : "-"
+longDashboardOk = dashboardFilterMode == "Off" or (dashboardFilterMode == "Soft" and dashboardSoftLongOk) or (dashboardFilterMode == "Strict" and dashboardStrictLongOk) or (dashboardFilterMode == "Smart" and dashboardSmartLongOk)
+shortDashboardOk = dashboardFilterMode == "Off" or (dashboardFilterMode == "Soft" and dashboardSoftShortOk) or (dashboardFilterMode == "Strict" and dashboardStrictShortOk) or (dashboardFilterMode == "Smart" and dashboardSmartShortOk)
+longSignal = longSignalRaw and longDashboardOk
+shortSignal = shortSignalRaw and shortDashboardOk
+blockedLongSignal = longSignalRaw and not longSignal
+blockedShortSignal = shortSignalRaw and not shortSignal
+blockedLongReason = dashboardFilterMode == "Smart" and blockedLongSignal ? smartLongBlockReason : dashboardFilterMode == "Strict" and blockedLongSignal ? "Strict state" : dashboardFilterMode == "Soft" and blockedLongSignal ? "Bias SHORT" : "-"
+blockedShortReason = dashboardFilterMode == "Smart" and blockedShortSignal ? smartShortBlockReason : dashboardFilterMode == "Strict" and blockedShortSignal ? "Strict state" : dashboardFilterMode == "Soft" and blockedShortSignal ? "Bias LONG" : "-"
+
+var int rawLongSignalCount = 0
+var int rawShortSignalCount = 0
+var int passedLongSignalCount = 0
+var int passedShortSignalCount = 0
+var int blockedLongSignalCount = 0
+var int blockedShortSignalCount = 0
+
+if longSignalRaw
+    rawLongSignalCount += 1
+if shortSignalRaw
+    rawShortSignalCount += 1
+if longSignal
+    passedLongSignalCount += 1
+if shortSignal
+    passedShortSignalCount += 1
+if blockedLongSignal
+    blockedLongSignalCount += 1
+if blockedShortSignal
+    blockedShortSignalCount += 1
+
+var float activeLongStop = na
+var float activeLongTarget = na
+var float activeLongInitialRisk = na
+var float activeShortStop = na
+var float activeShortTarget = na
+var float activeShortInitialRisk = na
+
+if strategy.position_size == 0
+    activeLongStop := na
+    activeLongTarget := na
+    activeLongInitialRisk := na
+    activeShortStop := na
+    activeShortTarget := na
+    activeShortInitialRisk := na
+
+if longSignal
+    activeLongStop := longStopPlan
+    activeLongInitialRisk := longStopDistance
+    activeLongTarget := longEntryPlan + longStopDistance * riskReward
+    strategy.entry("Long", strategy.long, qty=longQty)
+    strategy.exit("Long exit", from_entry="Long", stop=activeLongStop, limit=activeLongTarget)
+    label.new(bar_index, low, "Q " + str.tostring(longQualityPoints) + "\nRisk " + str.tostring(longDynamicRiskPercent, "#.##") + "%\nUSDT " + str.tostring(longPositionUsdt, "#.##") + "\nStop " + str.tostring(longStopDistancePercent, "#.##") + "%\nRisk $" + str.tostring(longRiskCash, "#.##"), style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+
+if shortSignal
+    activeShortStop := shortStopPlan
+    activeShortInitialRisk := shortStopDistance
+    activeShortTarget := shortEntryPlan - shortStopDistance * riskReward
+    strategy.entry("Short", strategy.short, qty=shortQty)
+    strategy.exit("Short exit", from_entry="Short", stop=activeShortStop, limit=activeShortTarget)
+    label.new(bar_index, high, "Q " + str.tostring(shortQualityPoints) + "\nRisk " + str.tostring(shortDynamicRiskPercent, "#.##") + "%\nUSDT " + str.tostring(shortPositionUsdt, "#.##") + "\nStop " + str.tostring(shortStopDistancePercent, "#.##") + "%\nRisk $" + str.tostring(shortRiskCash, "#.##"), style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+if strategy.position_size > 0 and not na(activeLongStop) and not na(activeLongTarget) and not na(activeLongInitialRisk)
+    if useBreakEven and high >= strategy.position_avg_price + activeLongInitialRisk * breakEvenAfterR
+        activeLongStop := math.max(activeLongStop, strategy.position_avg_price)
+    if useTrailingStop
+        activeLongStop := math.max(activeLongStop, close - atr * trailingAtrMultiplier)
+    strategy.exit("Long exit", from_entry="Long", stop=activeLongStop, limit=activeLongTarget)
+
+if strategy.position_size < 0 and not na(activeShortStop) and not na(activeShortTarget) and not na(activeShortInitialRisk)
+    if useBreakEven and low <= strategy.position_avg_price - activeShortInitialRisk * breakEvenAfterR
+        activeShortStop := math.min(activeShortStop, strategy.position_avg_price)
+    if useTrailingStop
+        activeShortStop := math.min(activeShortStop, close + atr * trailingAtrMultiplier)
+    strategy.exit("Short exit", from_entry="Short", stop=activeShortStop, limit=activeShortTarget)
+
+plot(emaFast, "EMA fast", color=color.new(color.teal, 0), linewidth=1)
+plot(emaSlow, "EMA slow", color=color.new(color.orange, 0), linewidth=1)
+plot(emaMacro, "EMA macro", color=color.new(color.purple, 0), linewidth=2)
+
+plotshape(longSignal, title="Long signal", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, size=size.small, text="LONG")
+plotshape(shortSignal, title="Short signal", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.white, size=size.small, text="SHORT")
+plotshape(showBlockedSignals and blockedLongSignal, title="Dashboard blocked long", style=shape.xcross, location=location.belowbar, color=color.new(color.gray, 0), textcolor=color.gray, size=size.tiny, text="BLOCK L")
+plotshape(showBlockedSignals and blockedShortSignal, title="Dashboard blocked short", style=shape.xcross, location=location.abovebar, color=color.new(color.gray, 0), textcolor=color.gray, size=size.tiny, text="BLOCK S")
+
+plot(strategy.position_size > 0 ? activeLongStop : na, "Long stop", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(strategy.position_size > 0 ? activeLongTarget : na, "Long take profit", color=color.new(color.green, 0), style=plot.style_linebr)
+plot(strategy.position_size < 0 ? activeShortStop : na, "Short stop", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(strategy.position_size < 0 ? activeShortTarget : na, "Short take profit", color=color.new(color.green, 0), style=plot.style_linebr)
+
+var table debugTable = table.new(position.top_right, 2, 15, border_width=1)
+
+debugRow(row, labelText, valueText, bgColor) =>
+    table.cell(debugTable, 0, row, labelText, text_color=color.white, bgcolor=color.new(color.black, 20))
+    table.cell(debugTable, 1, row, valueText, text_color=color.white, bgcolor=bgColor)
+
+if barstate.islast and showDebugTable
+    table.cell(debugTable, 0, 0, "Dashboard debug", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(debugTable, 1, 0, "Smart v2.1", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    debugRow(1, "Raw long signals", str.tostring(rawLongSignalCount), color.new(color.green, 35))
+    debugRow(2, "Raw short signals", str.tostring(rawShortSignalCount), color.new(color.red, 35))
+    debugRow(3, "Passed long signals", str.tostring(passedLongSignalCount), color.new(color.green, 0))
+    debugRow(4, "Passed short signals", str.tostring(passedShortSignalCount), color.new(color.red, 0))
+    debugRow(5, "Blocked long signals", str.tostring(blockedLongSignalCount), color.new(color.gray, 10))
+    debugRow(6, "Blocked short signals", str.tostring(blockedShortSignalCount), color.new(color.gray, 10))
+    debugRow(7, "Dashboard mode", dashboardFilterMode, dashboardFilterMode == "Off" ? color.new(color.gray, 20) : dashboardFilterMode == "Soft" ? color.new(color.yellow, 15) : dashboardFilterMode == "Strict" ? color.new(color.orange, 10) : color.new(color.blue, 10))
+    debugRow(8, "Final bias", dashboardFinalBias, dashboardBiasLong ? color.new(color.green, 0) : dashboardBiasShort ? color.new(color.red, 0) : color.new(color.yellow, 20))
+    debugRow(9, "Action state", dashboardActionState, dashboardReadyLong or dashboardBiasLong ? color.new(color.green, 15) : dashboardReadyShort or dashboardBiasShort ? color.new(color.red, 15) : color.new(color.gray, 25))
+    debugRow(10, "Long / Short score", str.tostring(dashboardLongScore) + " / " + str.tostring(dashboardShortScore), color.new(color.black, 0))
+    debugRow(11, "EMA fan", dashboardEmaFanText, dashboardEmaFanBullishClean ? color.new(color.green, 15) : dashboardEmaFanBearishClean ? color.new(color.red, 15) : color.new(color.yellow, 20))
+    debugRow(12, "ATR / Pullback", dashboardAtrText + " / " + dashboardPullbackText, dashboardAtrVolatilityNormal ? color.new(color.green, 25) : color.new(color.yellow, 20))
+    debugRow(13, "Block reason", blockedLongSignal ? "L: " + blockedLongReason : blockedShortSignal ? "S: " + blockedShortReason : "-", blockedLongSignal or blockedShortSignal ? color.new(color.gray, 0) : color.new(color.gray, 35))
+    debugRow(14, "Runner exit", useRunnerExit ? "ON (input only)" : "OFF", useRunnerExit ? color.new(color.orange, 20) : color.new(color.gray, 35))

@@ -1,0 +1,312 @@
+//@version=6
+strategy("BTC 4H Range Sweep/Reclaim Strategy v1", overlay=true, pyramiding=0, process_orders_on_close=true, calc_on_every_tick=false, initial_capital=1000, default_qty_type=strategy.fixed, default_qty_value=1, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1, max_lines_count=500, max_labels_count=500, max_boxes_count=100)
+
+timezoneInput = input.string("America/New_York", "Timezone")
+rangeStartHour = input.int(0, "Range start hour", minval=0, maxval=23)
+rangeDurationHours = input.int(4, "Range duration hours", minval=1, maxval=12)
+signalMode = input.string("First long and first short", "Signal mode", options=["First valid signal only", "First long and first short", "All signals"])
+
+useAtrStopBuffer = input.bool(true, "Use ATR stop buffer")
+atrLength = input.int(14, "ATR length", minval=1)
+atrStopBufferMultiplier = input.float(0.2, "ATR stop buffer multiplier", minval=0.0, step=0.1)
+riskReward = input.float(2.0, "Risk reward", minval=0.1, step=0.1)
+minRewardRisk = input.float(1.5, "Min reward risk", minval=0.1, step=0.1)
+useMaxBreakoutSizeFilter = input.bool(true, "Use max breakout size filter")
+maxBreakoutAtr = input.float(2.0, "Max breakout ATR", minval=0.1, step=0.1)
+maxStopDistancePercent = input.float(3.0, "Max stop distance %", minval=0.1, step=0.1)
+minStopDistancePercent = input.float(0.05, "Min stop distance %", minval=0.0, step=0.01)
+
+useRiskSizing = input.bool(true, "Use risk sizing")
+baseRiskPercent = input.float(0.75, "Base risk %", minval=0.01, step=0.1)
+maxPositionUsdt = input.float(300.0, "Max position USDT", minval=0.0, step=10.0)
+minPositionUsdt = input.float(20.0, "Min position USDT", minval=0.0, step=5.0)
+
+showRangeBox = input.bool(true, "Show range box")
+showRangeLabels = input.bool(true, "Show range labels")
+showSweepLabels = input.bool(true, "Show sweep labels")
+showReclaimLabels = input.bool(true, "Show reclaim labels")
+showSlTpLines = input.bool(true, "Show SL/TP lines")
+showDashboard = input.bool(true, "Show dashboard")
+dashboardPositionInput = input.string("Bottom left", "Dashboard position", options=["Top right", "Top left", "Bottom right", "Bottom left"])
+
+atr = ta.atr(atrLength)
+atrStopBuffer = useAtrStopBuffer ? atr * atrStopBufferMultiplier : 0.0
+
+nyHour = hour(time, timezoneInput)
+nyMinute = minute(time, timezoneInput)
+nyMinuteOfDay = nyHour * 60 + nyMinute
+nyDayKey = year(time, timezoneInput) * 10000 + month(time, timezoneInput) * 100 + dayofmonth(time, timezoneInput)
+nyDayChange = ta.change(nyDayKey)
+newNyDay = not na(nyDayChange) and nyDayChange != 0
+
+rangeStartMinute = rangeStartHour * 60
+rangeEndMinuteRaw = rangeStartMinute + rangeDurationHours * 60
+rangeEndMinute = rangeEndMinuteRaw % 1440
+rangeWindow = rangeEndMinuteRaw <= 1440 ? nyMinuteOfDay >= rangeStartMinute and nyMinuteOfDay < rangeEndMinuteRaw : nyMinuteOfDay >= rangeStartMinute or nyMinuteOfDay < rangeEndMinute
+priorRangeWindow = rangeWindow[1] == true
+rangeStarted = rangeWindow and (not priorRangeWindow or newNyDay)
+rangeEnded = not rangeWindow and priorRangeWindow
+
+var float rangeHigh = na
+var float rangeLow = na
+var int rangeStartBar = na
+var int rangeEndBar = na
+var bool rangeLocked = false
+var string rangeStatus = "Waiting"
+
+var bool highSweepActive = false
+var bool lowSweepActive = false
+var float breakoutHigh = na
+var float breakoutLow = na
+
+var bool tradedAnyToday = false
+var bool tradedLongToday = false
+var bool tradedShortToday = false
+var int tradesToday = 0
+
+var float latestStop = na
+var float latestTp1 = na
+var float latestTp2 = na
+var float latestStopDistanceAtr = na
+var string latestTpText = "-"
+
+var line rangeHighLine = na
+var line rangeLowLine = na
+var box rangeBox = na
+var line stopLine = na
+var line tp1Line = na
+var line tp2Line = na
+
+if newNyDay
+    rangeHigh := na
+    rangeLow := na
+    rangeStartBar := na
+    rangeEndBar := na
+    rangeLocked := false
+    rangeStatus := "Waiting"
+    highSweepActive := false
+    lowSweepActive := false
+    breakoutHigh := na
+    breakoutLow := na
+    tradedAnyToday := false
+    tradedLongToday := false
+    tradedShortToday := false
+    tradesToday := 0
+    latestStop := na
+    latestTp1 := na
+    latestTp2 := na
+    latestStopDistanceAtr := na
+    latestTpText := "-"
+    rangeHighLine := na
+    rangeLowLine := na
+    rangeBox := na
+    stopLine := na
+    tp1Line := na
+    tp2Line := na
+
+if rangeStarted
+    rangeHigh := high
+    rangeLow := low
+    rangeStartBar := bar_index
+    rangeEndBar := na
+    rangeLocked := false
+    rangeStatus := "Active"
+    highSweepActive := false
+    lowSweepActive := false
+    breakoutHigh := na
+    breakoutLow := na
+    tradedAnyToday := false
+    tradedLongToday := false
+    tradedShortToday := false
+    tradesToday := 0
+    if showRangeBox
+        rangeBox := box.new(rangeStartBar, rangeHigh, bar_index, rangeLow, bgcolor=color.new(color.blue, 88), border_color=color.new(color.blue, 35))
+
+if rangeWindow and not na(rangeStartBar)
+    rangeHigh := math.max(nz(rangeHigh, high), high)
+    rangeLow := math.min(nz(rangeLow, low), low)
+    if showRangeBox and not na(rangeBox)
+        box.set_top(rangeBox, rangeHigh)
+        box.set_bottom(rangeBox, rangeLow)
+        box.set_right(rangeBox, bar_index)
+
+if rangeEnded and not na(rangeHigh) and not na(rangeLow)
+    rangeLocked := true
+    rangeEndBar := bar_index - 1
+    rangeStatus := "Active"
+    rangeHighLine := line.new(rangeEndBar, rangeHigh, bar_index, rangeHigh, color=color.new(color.red, 0), width=2)
+    rangeLowLine := line.new(rangeEndBar, rangeLow, bar_index, rangeLow, color=color.new(color.green, 0), width=2)
+    if showRangeLabels
+        label.new(rangeEndBar, rangeHigh, "4H High", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+        label.new(rangeEndBar, rangeLow, "4H Low", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.tiny)
+
+if rangeLocked and not newNyDay
+    if not na(rangeHighLine)
+        line.set_x2(rangeHighLine, bar_index)
+    if not na(rangeLowLine)
+        line.set_x2(rangeLowLine, bar_index)
+    if showRangeBox and not na(rangeBox)
+        box.set_right(rangeBox, bar_index)
+    if not na(stopLine)
+        line.set_x2(stopLine, bar_index)
+    if not na(tp1Line)
+        line.set_x2(tp1Line, bar_index)
+    if not na(tp2Line)
+        line.set_x2(tp2Line, bar_index)
+
+insideRange = rangeLocked and close <= rangeHigh and close >= rangeLow
+aboveRange = rangeLocked and close > rangeHigh
+belowRange = rangeLocked and close < rangeLow
+positionText = not rangeLocked ? "N/A" : aboveRange ? "Above" : belowRange ? "Below" : "Inside"
+
+breakoutHighDistanceAtr = rangeLocked and atr > 0 ? (close - rangeHigh) / atr : na
+breakoutLowDistanceAtr = rangeLocked and atr > 0 ? (rangeLow - close) / atr : na
+validHighBreakoutSize = not useMaxBreakoutSizeFilter or (not na(breakoutHighDistanceAtr) and breakoutHighDistanceAtr <= maxBreakoutAtr)
+validLowBreakoutSize = not useMaxBreakoutSizeFilter or (not na(breakoutLowDistanceAtr) and breakoutLowDistanceAtr <= maxBreakoutAtr)
+
+newSweepHigh = barstate.isconfirmed and rangeLocked and aboveRange and validHighBreakoutSize
+newSweepLow = barstate.isconfirmed and rangeLocked and belowRange and validLowBreakoutSize
+
+if newSweepHigh
+    highSweepActive := true
+    breakoutHigh := na(breakoutHigh) or highSweepActive[1] != true ? high : math.max(breakoutHigh, high)
+    rangeStatus := "Swept High"
+    if showSweepLabels
+        label.new(bar_index, high, "Sweep High", style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+
+if highSweepActive and aboveRange
+    breakoutHigh := math.max(nz(breakoutHigh, high), high)
+
+if newSweepLow
+    lowSweepActive := true
+    breakoutLow := na(breakoutLow) or lowSweepActive[1] != true ? low : math.min(breakoutLow, low)
+    rangeStatus := "Swept Low"
+    if showSweepLabels
+        label.new(bar_index, low, "Sweep Low", style=label.style_label_up, color=color.new(color.orange, 0), textcolor=color.white, size=size.tiny)
+
+if lowSweepActive and belowRange
+    breakoutLow := math.min(nz(breakoutLow, low), low)
+
+allowLongByMode = signalMode == "All signals" or (signalMode == "First long and first short" and not tradedLongToday) or (signalMode == "First valid signal only" and not tradedAnyToday)
+allowShortByMode = signalMode == "All signals" or (signalMode == "First long and first short" and not tradedShortToday) or (signalMode == "First valid signal only" and not tradedAnyToday)
+
+rewardRiskOk = riskReward >= minRewardRisk
+rawReclaimShort = barstate.isconfirmed and highSweepActive and insideRange
+rawReclaimLong = barstate.isconfirmed and lowSweepActive and insideRange
+
+shortEntryPlan = close
+shortStopPlan = nz(breakoutHigh, high) + atrStopBuffer
+shortStopDistance = shortStopPlan - shortEntryPlan
+shortStopDistancePercent = shortStopDistance > 0 ? shortStopDistance / shortEntryPlan * 100.0 : na
+shortStopDistanceOk = shortStopDistance > syminfo.mintick and shortStopDistancePercent >= minStopDistancePercent and shortStopDistancePercent <= maxStopDistancePercent
+shortTargetPlan = shortEntryPlan - shortStopDistance * riskReward
+shortRiskCash = strategy.equity * baseRiskPercent / 100.0
+shortRiskQty = shortStopDistance > syminfo.mintick ? shortRiskCash / shortStopDistance : na
+shortMaxQty = maxPositionUsdt > 0 ? maxPositionUsdt / shortEntryPlan : shortRiskQty
+shortQty = not na(shortRiskQty) and not na(shortMaxQty) ? math.min(shortRiskQty, shortMaxQty) : na
+shortPositionUsdt = shortQty * shortEntryPlan
+shortSizeOk = not useRiskSizing or (not na(shortQty) and shortQty > 0 and shortPositionUsdt >= minPositionUsdt)
+
+longEntryPlan = close
+longStopPlan = nz(breakoutLow, low) - atrStopBuffer
+longStopDistance = longEntryPlan - longStopPlan
+longStopDistancePercent = longStopDistance > 0 ? longStopDistance / longEntryPlan * 100.0 : na
+longStopDistanceOk = longStopDistance > syminfo.mintick and longStopDistancePercent >= minStopDistancePercent and longStopDistancePercent <= maxStopDistancePercent
+longTargetPlan = longEntryPlan + longStopDistance * riskReward
+longRiskCash = strategy.equity * baseRiskPercent / 100.0
+longRiskQty = longStopDistance > syminfo.mintick ? longRiskCash / longStopDistance : na
+longMaxQty = maxPositionUsdt > 0 ? maxPositionUsdt / longEntryPlan : longRiskQty
+longQty = not na(longRiskQty) and not na(longMaxQty) ? math.min(longRiskQty, longMaxQty) : na
+longPositionUsdt = longQty * longEntryPlan
+longSizeOk = not useRiskSizing or (not na(longQty) and longQty > 0 and longPositionUsdt >= minPositionUsdt)
+
+shortEntrySignal = rawReclaimShort and not rawReclaimLong and allowShortByMode and strategy.position_size == 0 and rewardRiskOk and shortStopDistanceOk and shortSizeOk
+longEntrySignal = rawReclaimLong and not rawReclaimShort and allowLongByMode and strategy.position_size == 0 and rewardRiskOk and longStopDistanceOk and longSizeOk
+
+if rawReclaimShort
+    rangeStatus := "Reclaimed High"
+    highSweepActive := false
+
+if rawReclaimLong
+    rangeStatus := "Reclaimed Low"
+    lowSweepActive := false
+
+if shortEntrySignal
+    latestStop := shortStopPlan
+    latestTp1 := shortEntryPlan - shortStopDistance
+    latestTp2 := shortTargetPlan
+    latestStopDistanceAtr := atr > 0 ? shortStopDistance / atr : na
+    latestTpText := "1R " + str.tostring(latestTp1, format.mintick) + " / 2R " + str.tostring(latestTp2, format.mintick)
+    tradedAnyToday := true
+    tradedShortToday := true
+    tradesToday += 1
+    if useRiskSizing
+        strategy.entry("Short", strategy.short, qty=shortQty)
+    else
+        strategy.entry("Short", strategy.short)
+    strategy.exit("Short exit", from_entry="Short", stop=shortStopPlan, limit=shortTargetPlan)
+    if showReclaimLabels
+        label.new(bar_index, high, "Reclaim Short", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+        label.new(bar_index, high + atr * 0.35, "Entry Short", style=label.style_label_down, color=color.new(color.maroon, 0), textcolor=color.white, size=size.tiny)
+    if showSlTpLines
+        stopLine := line.new(bar_index, shortStopPlan, bar_index, shortStopPlan, color=color.new(color.red, 0), style=line.style_dashed, width=1)
+        tp1Line := line.new(bar_index, latestTp1, bar_index, latestTp1, color=color.new(color.green, 0), style=line.style_dotted, width=1)
+        tp2Line := line.new(bar_index, shortTargetPlan, bar_index, shortTargetPlan, color=color.new(color.green, 0), style=line.style_dashed, width=1)
+
+if longEntrySignal
+    latestStop := longStopPlan
+    latestTp1 := longEntryPlan + longStopDistance
+    latestTp2 := longTargetPlan
+    latestStopDistanceAtr := atr > 0 ? longStopDistance / atr : na
+    latestTpText := "1R " + str.tostring(latestTp1, format.mintick) + " / 2R " + str.tostring(latestTp2, format.mintick)
+    tradedAnyToday := true
+    tradedLongToday := true
+    tradesToday += 1
+    if useRiskSizing
+        strategy.entry("Long", strategy.long, qty=longQty)
+    else
+        strategy.entry("Long", strategy.long)
+    strategy.exit("Long exit", from_entry="Long", stop=longStopPlan, limit=longTargetPlan)
+    if showReclaimLabels
+        label.new(bar_index, low, "Reclaim Long", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+        label.new(bar_index, low - atr * 0.35, "Entry Long", style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.black, size=size.tiny)
+    if showSlTpLines
+        stopLine := line.new(bar_index, longStopPlan, bar_index, longStopPlan, color=color.new(color.red, 0), style=line.style_dashed, width=1)
+        tp1Line := line.new(bar_index, latestTp1, bar_index, latestTp1, color=color.new(color.green, 0), style=line.style_dotted, width=1)
+        tp2Line := line.new(bar_index, longTargetPlan, bar_index, longTargetPlan, color=color.new(color.green, 0), style=line.style_dashed, width=1)
+
+suggestedBias = longEntrySignal ? "LONG" : shortEntrySignal ? "SHORT" : rawReclaimLong ? "LONG blocked" : rawReclaimShort ? "SHORT blocked" : "WAIT"
+statusColor = rangeStatus == "Reclaimed Low" ? color.new(color.green, 0) : rangeStatus == "Reclaimed High" ? color.new(color.red, 0) : rangeStatus == "Swept Low" or rangeStatus == "Swept High" ? color.new(color.orange, 0) : rangeStatus == "Active" ? color.new(color.blue, 10) : color.new(color.gray, 25)
+biasColor = suggestedBias == "LONG" ? color.new(color.green, 0) : suggestedBias == "SHORT" ? color.new(color.red, 0) : str.contains(suggestedBias, "blocked") ? color.new(color.orange, 10) : color.new(color.gray, 25)
+
+alertcondition(longEntrySignal, title="Long entry", message="BTC 4H Range Sweep/Reclaim Strategy v1: Long entry")
+alertcondition(shortEntrySignal, title="Short entry", message="BTC 4H Range Sweep/Reclaim Strategy v1: Short entry")
+alertcondition(newSweepHigh, title="Sweep High", message="BTC 4H Range Sweep/Reclaim Strategy v1: Sweep High")
+alertcondition(newSweepLow, title="Sweep Low", message="BTC 4H Range Sweep/Reclaim Strategy v1: Sweep Low")
+alertcondition(rawReclaimLong, title="Reclaim Long", message="BTC 4H Range Sweep/Reclaim Strategy v1: Reclaim Long")
+alertcondition(rawReclaimShort, title="Reclaim Short", message="BTC 4H Range Sweep/Reclaim Strategy v1: Reclaim Short")
+
+dashboardPosition = switch dashboardPositionInput
+    "Top right" => position.top_right
+    "Top left" => position.top_left
+    "Bottom right" => position.bottom_right
+    => position.bottom_left
+
+var table dashboard = table.new(dashboardPosition, 2, 8, border_width=1)
+
+setRow(row, labelText, valueText, bgColor) =>
+    table.cell(dashboard, 0, row, labelText, text_color=color.white, bgcolor=color.new(color.black, 0))
+    table.cell(dashboard, 1, row, valueText, text_color=color.white, bgcolor=bgColor)
+
+if barstate.islast
+    if showDashboard
+        setRow(0, "Status", rangeStatus, statusColor)
+        setRow(1, "High / Low", (na(rangeHigh) ? "-" : str.tostring(rangeHigh, format.mintick)) + " / " + (na(rangeLow) ? "-" : str.tostring(rangeLow, format.mintick)), color.new(color.gray, 20))
+        setRow(2, "Price", positionText, positionText == "Above" ? color.new(color.red, 10) : positionText == "Below" ? color.new(color.green, 10) : color.new(color.gray, 25))
+        setRow(3, "Bias", suggestedBias, biasColor)
+        setRow(4, "Stop ATR", na(latestStopDistanceAtr) ? "-" : str.tostring(latestStopDistanceAtr, "#.##"), color.new(color.orange, 20))
+        setRow(5, "TP 1R / 2R", latestTpText, color.new(color.blue, 20))
+        setRow(6, "Trades today", str.tostring(tradesToday), color.new(color.gray, 25))
+        setRow(7, "Signal mode", signalMode, color.new(color.gray, 25))
+    else
+        table.clear(dashboard, 0, 0, 1, 7)
